@@ -20,7 +20,7 @@ class MidiTrack(TypedDict):
 def read_midi(path: Path) -> tuple[list[MidiTrack], list[Tempo], list[Meter]]:
     midi_file = mido.MidiFile(path)
     if midi_file.type == 2 or midi_file.ticks_per_beat <= 0:
-        raise ValueError("Použij MIDI typu 0 nebo 1 s časováním PPQ.")
+        raise ValueError("Choose a type 0 or 1 MIDI file with PPQ timing.")
     tempo_changes = {0: 500000}
     meter_changes = {0: (4, 4)}
     for track in midi_file.tracks:
@@ -95,15 +95,15 @@ def read_midi(path: Path) -> tuple[list[MidiTrack], list[Tempo], list[Meter]]:
                 else "guitar" if 24 <= program <= 31 else "piano" if program <= 7
                 else "violin" if program == 40 else "melody"
             )
-            title = track.name or f"Stopa {index}"
+            title = track.name or f"Track {index}"
             if len(groups) > 1:
-                title += f" / kanál {channel + 1}, program {program + 1}"
+                title += f" / channel {channel + 1}, program {program + 1}"
             tracks.append({
                 "title": title, "mode": mode,
                 "notes": sorted(notes, key=lambda note: (note["start"], note["pitch"])),
             })
     if not tracks:
-        raise ValueError("MIDI neobsahuje žádné noty s kladnou délkou.")
+        raise ValueError("The MIDI file contains no notes with a positive duration.")
     tempo: list[Tempo] = [{"time": seconds(tick), "bpm": mido.tempo2bpm(tempo_changes[tick])}
                           for tick in starts]
     meter: list[Meter] = [

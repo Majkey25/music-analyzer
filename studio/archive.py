@@ -19,8 +19,8 @@ _TRACK_LIMIT = 8
 _BLOCK = 1024**2
 _ID = re.compile(r"[0-9a-f]{32}")
 _MEMBER = re.compile(r"media/([0-9a-f]{32})\.wav")
-_INVALID = "Archiv je poškozený nebo má nepodporovaný obsah."
-_WAV_ERROR = "Zvuk musí být stereo WAV, 44,1 kHz, 16bitové PCM, nejvýš 15 minut."
+_INVALID = "The archive is corrupt or has unsupported contents."
+_WAV_ERROR = "Audio must be stereo WAV with 44.1 kHz, 16-bit PCM and a duration of 15 minutes or less."
 
 
 class _ArchiveError(ValueError):
@@ -40,24 +40,24 @@ def _remove_created(path: Path, identity: os.stat_result) -> None:
     except FileNotFoundError:
         pass
     except OSError:
-        raise ValueError("Dočasný soubor se nepodařilo odstranit.") from None
+        raise ValueError("Could not remove the temporary file.") from None
 
 
 @contextmanager
 def _input(path: Path) -> Iterator[BinaryIO]:
     before = path.lstat()
     if not _regular(before):
-        raise _ArchiveError("Vyber běžný soubor.")
+        raise _ArchiveError("Choose a regular file.")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
     fd = os.open(path, flags | getattr(os, "O_NOFOLLOW", 0))
     with _ZipReader(FileIO(fd, "rb")) as stream:
         opened = os.fstat(stream.fileno())
         if not _regular(opened) or not os.path.samestat(before, opened):
-            raise _ArchiveError("Soubor se během čtení změnil.")
+            raise _ArchiveError("The file changed while it was being read.")
         yield stream
         after = os.fstat(stream.fileno())
         if (opened.st_size, opened.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
-            raise _ArchiveError("Soubor se během čtení změnil.")
+            raise _ArchiveError("The file changed while it was being read.")
 
 
 def _check_wave(stream: BinaryIO, size: int) -> None:
@@ -117,14 +117,14 @@ def write_archive(destination: Path, manifest: Mapping[str, object], media: Mapp
     identity: os.stat_result | None = None
     try:
         if len(media) > _TRACK_LIMIT or any(not _ID.fullmatch(key) for key in media):
-            raise _ArchiveError("Archiv obsahuje neplatné ID stopy nebo více než osm stop.")
+            raise _ArchiveError("The archive has an invalid track ID or more than eight tracks.")
         encoded = json.dumps(dict(manifest), ensure_ascii=False, allow_nan=False,
                              separators=(",", ":")).encode("utf-8")
         if len(encoded) > _MANIFEST_LIMIT:
-            raise _ArchiveError("Manifest přesahuje 12 MiB.")
+            raise _ArchiveError("The archive manifest exceeds 12 MiB.")
         existing = destination.lstat() if os.path.lexists(destination) else None
         if existing and not _regular(existing):
-            raise _ArchiveError("Vyber běžný cílový soubor.")
+            raise _ArchiveError("Choose a regular file as the destination.")
         with NamedTemporaryFile(dir=destination.parent, delete=False) as output:
             temporary = Path(output.name)
             identity = os.fstat(output.fileno())
@@ -135,10 +135,10 @@ def write_archive(destination: Path, manifest: Mapping[str, object], media: Mapp
                     with _input(path) as stream:
                         info = os.fstat(stream.fileno())
                         if existing and os.path.samestat(existing, info):
-                            raise _ArchiveError("Archiv musí mít jiný cílový soubor než zvuk.")
+                            raise _ArchiveError("Choose a separate destination for the archive.")
                         total += info.st_size
                         if total > _MEDIA_LIMIT:
-                            raise _ArchiveError("Zvuk v archivu přesahuje 1,3 GiB.")
+                            raise _ArchiveError("Audio in the archive exceeds 1.3 GiB.")
                         _check_wave(stream, info.st_size)
                         with archive.open(f"media/{key}.wav", "w") as member:
                             _copy(stream, member, info.st_size)
@@ -147,7 +147,7 @@ def write_archive(destination: Path, manifest: Mapping[str, object], media: Mapp
     except _ArchiveError:
         raise
     except (EOFError, OSError, ValueError, TypeError, RuntimeError, struct.error, wave.Error):
-        raise ValueError("Archiv se nepodařilo uložit. Zkontroluj vstupní soubory a cíl.") from None
+        raise ValueError("Could not save the archive. Check the input files and destination.") from None
     finally:
         if temporary is not None and identity is not None:
             _remove_created(temporary, identity)
@@ -179,7 +179,7 @@ def _members(archive: zipfile.ZipFile, stream: BinaryIO) -> dict[str, zipfile.Zi
             raise _ArchiveError(_INVALID)
         if name == "manifest.json":
             if info.file_size > _MANIFEST_LIMIT:
-                raise _ArchiveError("Manifest přesahuje 12 MiB.")
+                raise _ArchiveError("The archive manifest exceeds 12 MiB.")
         elif _MEMBER.fullmatch(name):
             total += info.file_size
         else:
@@ -199,7 +199,7 @@ def read_archive(source: Path, target: Path) -> tuple[dict[str, object], dict[st
     try:
         directory = target.lstat()
         if (not stat.S_ISDIR(directory.st_mode) or target.is_junction() or any(target.iterdir())):
-            raise _ArchiveError("Pro import je potřeba prázdná pracovní složka.")
+            raise _ArchiveError("Opening an archive requires an empty working folder.")
         with _input(source) as stream, zipfile.ZipFile(stream) as archive:
             members = _members(archive, stream)
             metadata = members.pop("manifest.json")
@@ -207,7 +207,7 @@ def read_archive(source: Path, target: Path) -> tuple[dict[str, object], dict[st
                 _copy(entry, data, metadata.file_size)
                 manifest = json.loads(data.getvalue().decode("utf-8"), parse_constant=_invalid_constant)
             if not isinstance(manifest, dict):
-                raise _ArchiveError("Manifest musí být objekt JSON.")
+                raise _ArchiveError("The archive manifest must be a JSON object.")
             media: dict[str, Path] = {}
             for name, info in members.items():
                 key = name[len("media/"):-len(".wav")]

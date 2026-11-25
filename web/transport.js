@@ -1,8 +1,9 @@
 export class Transport {
-  constructor(audio, changed, failed) {
+  constructor(audio, changed, failed, onSeek) {
     this.audio = audio;
     this.changed = changed;
     this.failed = failed;
+    this.onSeek = onSeek;
     this.position = 0;
     this.duration = 0;
     this.speed = 1;
@@ -17,7 +18,7 @@ export class Transport {
     this.baseTime = 0;
     this.basePosition = 0;
     this.generation = 0;
-    audio.addEventListener("loadedmetadata", () => { audio.currentTime = this.position; });
+    audio.addEventListener("loadedmetadata", () => this.seekAudio());
     audio.addEventListener("ended", () => {
       if (!this.playing) return;
       if (this.loop) {
@@ -27,7 +28,7 @@ export class Transport {
       } else this.pause();
     });
     audio.addEventListener("error", () => {
-      if (this.source) this.reportFailure(new Error("Audio se nepodařilo přehrát."));
+      if (this.source) this.reportFailure(new Error("Could not play the audio."));
     });
     audio.addEventListener("timeupdate", () => {
       if (this.playing && this.loop && audio.currentTime >= this.loop.end) this.seek(this.loop.start);
@@ -41,7 +42,7 @@ export class Transport {
 
   playbackRejected(generation) {
     if (this.playing && generation === this.generation) {
-      this.reportFailure(new Error("Poslech se nepodařilo spustit. Zkus přehrát znovu."));
+      this.reportFailure(new Error("Playback could not start. Try playing again."));
     }
   }
 
@@ -58,9 +59,10 @@ export class Transport {
   }
 
   seek(position) {
+    this.onSeek();
     this.position = Math.max(0, Math.min(this.duration, position));
     this.stopVoices();
-    if (this.source && this.audio.readyState > 0) this.audio.currentTime = this.position;
+    this.seekAudio();
     this.basePosition = this.position;
     this.baseTime = this.context?.currentTime ?? 0;
     this.nextNote = this.notes.findIndex(note => note.end > this.position);
@@ -68,12 +70,19 @@ export class Transport {
     this.changed(this.position, this.playing);
   }
 
+  seekAudio() {
+    if (this.source && this.audio.readyState > 0 && Math.abs(this.audio.currentTime - this.position) > .001) {
+      this.audio.currentTime = this.position;
+    }
+  }
+
   async play() {
     if (this.playing || !this.duration) return;
     this.playing = true;
     const generation = ++this.generation;
     try {
-      this.seek(this.position >= this.duration ? 0 : this.position);
+      const outsideLoop = this.loop && (this.position < this.loop.start || this.position >= this.loop.end);
+      this.seek(outsideLoop ? this.loop.start : this.position >= this.duration ? 0 : this.position);
       if (this.source) {
         this.audio.playbackRate = this.speed;
         await this.audio.play();
@@ -81,7 +90,9 @@ export class Transport {
         if (!this.context) {
           this.context = new AudioContext();
           this.output = this.context.createDynamicsCompressor();
-          this.output.connect(this.context.destination);
+          this.master = this.context.createGain();
+          this.master.gain.value = this.audio.volume;
+          this.output.connect(this.master).connect(this.context.destination);
         }
         await this.context.resume();
         this.baseTime = this.context.currentTime;
@@ -110,6 +121,11 @@ export class Transport {
     this.speed = value;
     this.audio.playbackRate = value;
     this.seek(this.position);
+  }
+
+  setVolume(value) {
+    this.audio.volume = value;
+    if (this.master) this.master.gain.value = value;
   }
 
   tick() {
@@ -141,7 +157,8 @@ export class Transport {
     const upcoming = this.notes[this.nextNote]?.start ?? this.position;
     const lookahead = this.voices.size > 0 ? this.position + 1.25 * this.speed : upcoming + .001;
     const horizon = Math.min(Math.max(lookahead, this.position + 1.25 * this.speed), this.loop?.end ?? Infinity);
-    while (this.nextNote < this.notes.length && this.notes[this.nextNote].start <= horizon) {
+    while (this.nextNote < this.notes.length && this.notes[this.nextNote].start <= horizon
+        && this.notes[this.nextNote].start < (this.loop?.end ?? Infinity)) {
       const note = this.notes[this.nextNote++];
       const when = context.currentTime + Math.max(0, note.start - this.position) / this.speed;
       const duration = (Math.min(note.end, this.loop?.end ?? Infinity) - Math.max(note.start, this.position)) / this.speed;

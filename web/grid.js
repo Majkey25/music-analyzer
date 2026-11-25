@@ -1,11 +1,11 @@
 const pitchNames = ["C", "C♯", "D", "E♭", "E", "F", "F♯", "G", "A♭", "A", "B♭", "B"];
 const namedDrums = new Map([
-  [35, "Kopák"], [36, "Kopák"], [37, "Ráfek"], [38, "Virbl"], [40, "Virbl"],
-  [41, "Floor tom"], [42, "Hi-hat"], [43, "Floor tom"], [44, "Pedál hi-hat"],
-  [45, "Nízký tom"], [46, "Otevřená hi-hat"], [47, "Tom"],
-  [48, "Tom"], [49, "Crash"], [50, "Vysoký tom"], [51, "Ride"],
+  [35, "Kick"], [36, "Kick"], [37, "Rim"], [38, "Snare"], [40, "Snare"],
+  [41, "Floor tom"], [42, "Hi-hat"], [43, "Floor tom"], [44, "Pedal hi-hat"],
+  [45, "Low tom"], [46, "Open hi-hat"], [47, "Tom"],
+  [48, "Tom"], [49, "Crash"], [50, "High tom"], [51, "Ride"],
 ]);
-export const drumName = pitch => namedDrums.get(pitch) ?? `Úder ${pitch}`;
+export const drumName = pitch => namedDrums.get(pitch) ?? `Hit ${pitch}`;
 export const pitchName = pitch => pitchNames[pitch % 12] + (Math.floor(pitch / 12) - 1);
 export const clock = seconds => {
   const centiseconds = Math.max(0, Math.round(seconds * 100));
@@ -15,16 +15,16 @@ export const clock = seconds => {
 export function parseTuning(value) {
   const names = value.trim().split(/[\s,]+/);
   if (!value.trim() || names.length > 16) {
-    throw Error("Zadej ladění pro 1 až 16 strun, například F0 C1 F1 Bb1.");
+    throw Error("Enter tuning for 1 to 16 strings, for example F0 C1 F1 Bb1.");
   }
   return names.map(name => {
     const match = /^([A-Ga-g])([#♯b♭]?)(-?\d{1,2})$/u.exec(name);
-    if (!match) throw Error("Každá struna potřebuje tón a oktávu, například F#2 nebo Bb1.");
+    if (!match) throw Error("Each string needs a note and octave, for example F#2 or Bb1.");
     const [, step, accidental, octave] = match;
     const alteration = accidental ? ("#♯".includes(accidental) ? 1 : -1) : 0;
     const midi = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[step.toUpperCase()]
       + 12 * (Number(octave) + 1) + alteration;
-    if (midi < 0 || midi > 127) throw Error("Ladění musí být mezi C−1 a G9.");
+    if (midi < 0 || midi > 127) throw Error("Tuning must be between C−1 and G9.");
     return midi;
   });
 }
@@ -63,14 +63,16 @@ export function beatGrid(tempo, meter, phase, duration) {
     start = end;
   };
   for (const [i, signature] of origins.entries()) {
-    const end = Math.min(quarterAt(duration), origins[i + 1]?.quarter ?? Infinity);
+    const nextMeter = origins[i + 1]?.quarter ?? Infinity;
+    const end = quarterAt(duration);
+    const inSection = q => q < end + .0001 && q < nextMeter - .0001;
     const step = 4 / signature.denominator, measure = step * signature.numerator;
-    for (let q = signature.quarter; q < end + 0.0001; q += measure) {
+    for (let q = signature.quarter; inSection(q); q += measure) {
       const time = timeAt(q);
       if (time > duration || barNumber > 12000) break;
       if (barNumber > 1 && ((barNumber - 1) % 4 === 0 || q === signature.quarter)) flush(time);
       lastBar = barNumber;
-      for (let beat = 0; beat < signature.numerator && q + beat * step < end + .0001; beat += 1) {
+      for (let beat = 0; beat < signature.numerator && inSection(q + beat * step); beat += 1) {
         const position = timeAt(q + beat * step);
         if (position >= 0) ticks.push({ time: position, bar: barNumber, beat: beat + 1 });
       }

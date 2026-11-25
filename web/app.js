@@ -1,6 +1,7 @@
 import { beatGrid, clock, drumName, element, paintWave, parseTuning, pitchName } from "./grid.js";
 import { Transport } from "./transport.js";
 import { mountScore } from "./sheet.js";
+import { BeatClicks } from "./beat-clicks.js";
 
 const $ = id => document.getElementById(id);
 const presets = {
@@ -10,7 +11,8 @@ const presets = {
 const mode = () => $("instrument").value;
 const strings = () => ["bass", "guitar"].includes(mode());
 const ordered = rows => rows.sort((a, b) => a.start - b.start || a.pitch - b.pitch);
-const serialNotes = rows => rows.map(({ start, end, pitch, velocity }) => ({ start, end, pitch, velocity }));
+const serialNotes = rows => rows.map(({ start, end, pitch, velocity, head, slideIn, palmMute }) =>
+  ({ start, end, pitch, velocity, head, slideIn, palmMute }));
 const sourceURL = trackId => `/api/projects/${project.id}/tracks/${trackId}/audio`;
 const trackURL = trackId => `/api/projects/${project.id}/tracks/${trackId}`;
 
@@ -19,10 +21,13 @@ let playbackMode = "", mixSelection = null;
 let downloadRequested = false;
 let changedSession = false;
 let notes = [], tuning = [], positions = [], pages = [], marks = [];
+let beats = [], bars = [], selectedLoop = null;
 let view = "tab", page = 0, scorePage = 1, scoreCount = 1;
 let scoreRequest, refreshID = 0, selectID = 0, monitorID = 0, busy = false;
 let sheetMeasures = [];
 let lastSheetHeight = 0;
+let moveSheetCursor;
+let followedElement, preparingPrint = false;
 const isSheet = () => view !== "roll";
 const drafts = new Map();
 
@@ -34,7 +39,7 @@ async function request(path, options) {
   const response = await fetch(path, options);
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
-    throw Error(body.error ?? `Požadavek selhal (${response.status}).`);
+    throw Error(body.error ?? `Request failed (${response.status}).`);
   }
   return response;
 }
@@ -53,7 +58,14 @@ function guarded(action) {
   };
 }
 
-const transport = new Transport($("player"), positionChanged, showError);
+const clicks = new BeatClicks($("counting"), $("metronome-volume").valueAsNumber / 100,
+  () => updatePlayButton(transport.playing));
+const transport = new Transport($("player"), positionChanged, showError, () => clicks.cancel());
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+const metronomeOffset = () => {
+  const value = $("metronome-offset").valueAsNumber;
+  return Number.isInteger(value) && Math.abs(value) <= 250 ? value : 0;
+};
 
 function setupButtons() {
   const hasNotes = notes.length > 0, isAudio = Boolean(track?.audio);
@@ -69,18 +81,24 @@ function setupButtons() {
   $("separate").hidden = !project?.tracks.some(item => item.audio) || project.separated;
   $("monitor").disabled = $("apply-mix").disabled = busy;
   for (const button of $("practice-presets").querySelectorAll("button")) button.disabled = busy;
+  $("practice-notes").hidden = !isAudio || !hasNotes;
   $("first-note").disabled = !hasNotes;
   $("midi").disabled = $("xml").disabled = !hasNotes;
+  $("pdf").disabled = !hasNotes || preparingPrint;
+  $("follow").disabled = !hasNotes;
+  $("count-in").disabled = $("metronome").disabled = !beats.length;
   $("txt").hidden = !strings();
   $("txt").disabled = !hasNotes || positions.length !== notes.length;
   $("results").hidden = !hasNotes;
   $("adjustments").hidden = !track?.notes?.length;
   $("result-empty").hidden = hasNotes;
   $("play").disabled = !transport.duration;
-  $("loop").disabled = !hasNotes;
+  $("loop").disabled = !hasNotes || !bars.length;
+  if ($("loop").disabled || $("loop").getAttribute("aria-pressed") !== "true") $("loop-range").hidden = true;
   $("strings-form").hidden = !strings();
   document.querySelector('[data-view="tab"]').hidden = !strings();
-  document.querySelector('[data-view="roll"]').textContent = mode() === "drums" ? "Údery" : "Piano roll";
+  document.querySelector('[data-view="roll"]').textContent = mode() === "drums" ? "Drum hits" : "Piano roll";
+  setupMidiControls();
 }
 
 function busyStatus(value, message = "") {
@@ -100,24 +118,43 @@ async function waitForWork(snapshot) {
   return snapshot;
 }
 
+function revealSelectedTrack() {
+  const list = $("tracks");
+  if (list.scrollWidth <= list.clientWidth) return;
+  const selected = list.querySelector('[aria-pressed="true"]')?.closest("li");
+  if (!selected) return;
+  const card = selected.getBoundingClientRect(), strip = list.getBoundingClientRect();
+  if (card.left < strip.left || card.right > strip.right) {
+    list.scrollLeft += card.left - strip.left;
+  }
+}
+new ResizeObserver(revealSelectedTrack).observe($("tracks"));
+
 function showTrackList() {
+  const focused = $("tracks").contains(document.activeElement) ? document.activeElement.dataset.track : null;
+  $("track-count").textContent = project.tracks.length;
   $("tracks").replaceChildren(...project.tracks.map(item => {
-    const li = element("li"), button = element("button", item.title, "track-item");
+    const li = element("li"), button = element("button", "", "track-item");
     button.type = "button";
+    button.dataset.track = item.id;
     button.setAttribute("aria-pressed", String(item.id === track?.id));
-    button.append(element("small", [item.method || "Audio", item.count === null ? "" : `${item.count} not`]
-      .filter(Boolean).join(" / ")));
+    const kind = item.id === project.source ? "Source audio" : item.audio ? "Audio track" : "MIDI";
+    const description = item.count == null ? kind : `${kind} · ${item.count} ${item.count === 1 ? "note" : "notes"}`;
+    button.append(element("span", item.title), element("small", description));
     button.disabled = busy;
     button.addEventListener("click", guarded(() => select(item.id, true)));
     li.append(button);
     if (item.audio && project.separated && item !== project.tracks[0]) {
       const link = element("a", "WAV", "stem-link");
       link.href = sourceURL(item.id) + "?download=1";
-      link.setAttribute("aria-label", `Stáhnout ${item.title} jako WAV`);
+      link.setAttribute("aria-label", `Download ${item.title} as WAV`);
       li.append(link);
     }
     return li;
   }));
+  if (focused) Array.from($("tracks").querySelectorAll("button"))
+    .find(button => button.dataset.track === focused)?.focus({ preventScroll: true });
+  revealSelectedTrack();
 }
 
 function rhythmFields() {
@@ -126,7 +163,7 @@ function rhythmFields() {
   $("denominator").value = rhythm.meter[0].denominator;
   $("phase").value = Number(rhythm.phase.toFixed(3));
   $("timing").textContent = rhythm.timing + (rhythm.tempo.length > 1 || rhythm.meter.length > 1
-    ? " / obsahuje změny tempa nebo taktu." : "");
+    ? " / Includes tempo or time signature changes." : "");
   $("sheet-info").textContent = `${rhythm.meter[0].numerator}/${rhythm.meter[0].denominator} · ${Number(rhythm.tempo[0].bpm.toFixed(2))} BPM`;
 }
 
@@ -143,8 +180,8 @@ function hasUnsavedChanges() {
 function allowReplacement() {
   return !hasUnsavedChanges()
     || window.confirm(downloadRequested
-      ? "Stáhl se soubor relace? Po zavření zůstane jen stažená kopie."
-      : "Zavřít relaci s neuloženými úpravami?");
+      ? "Did the session file download? The downloaded copy is kept after closing."
+      : "Close this session with unsaved changes?");
 }
 
 window.addEventListener("beforeunload", event => {
@@ -159,6 +196,7 @@ async function closeProject(checkEdits = true) {
     return false;
   }
   const time = transport.position;
+  clicks.cancel();
   transport.setSource(null, 0);
   try {
     await request(`/api/projects/${project.id}`, { method: "DELETE" });
@@ -173,6 +211,7 @@ async function closeProject(checkEdits = true) {
   scoreRequest?.abort();
   $("score-image").replaceChildren();
   sheetMeasures = [];
+  moveSheetCursor = null;
   lastSheetHeight = 0;
   project = track = rhythm = monitor = audioWave = null;
   playbackMode = "";
@@ -181,6 +220,8 @@ async function closeProject(checkEdits = true) {
   downloadRequested = false;
   changedSession = false;
   notes = positions = pages = marks = [];
+  beats = bars = [];
+  selectedLoop = null;
   transport.loop = null;
   transport.setSource(null, 0);
   $("loop").setAttribute("aria-pressed", "false");
@@ -195,6 +236,7 @@ async function loadProject(snapshot) {
     const ready = await waitForWork(snapshot);
     await closeProject(false);
     project = ready;
+    $("metronome-offset").value = project.practice?.metronomeOffset ?? 0;
     $("project-title").textContent = project.title;
     rhythm = { tempo: project.tempo, meter: project.meter, phase: project.phase, timing: project.timing };
     rhythmFields();
@@ -212,8 +254,9 @@ async function loadProject(snapshot) {
       setSpeed(saved.speed);
       if (saved.view !== "tab" || strings()) view = saved.view;
       transport.seek(saved.position);
-      page = pageFor(transport.position);
+      updateBeatPages();
       $("loop").setAttribute("aria-pressed", String(saved.loop));
+      selectedLoop = saved.loopRange ?? null;
       await render(true);
     }
   } catch (error) {
@@ -237,7 +280,9 @@ async function select(id, first = false) {
   $("score-image").replaceChildren();
   marks = [];
   sheetMeasures = [];
+  moveSheetCursor = null;
   mixSelection = null;
+  selectedLoop = null;
   $("loop").setAttribute("aria-pressed", "false");
   if (detail.setup && !drafts.has(id)) {
     const raw = (detail.notes ?? []).map((note, i) => ({
@@ -261,7 +306,10 @@ async function select(id, first = false) {
   }
   setupMonitorOptions();
   $("monitor").value = detail.audio ? detail.id : project.source ?? "";
-  $("track-description").textContent = `${detail.title} / ${detail.method || "Zvuková stopa"}`;
+  $("track-description").textContent = `Selected track: ${detail.title}${detail.method === "MIDI reference" ? " · MIDI reference" : ""}`;
+  $("transcription-help").textContent = detail.audio
+    ? "Choose an instrument to transcribe this track, or use notes from a matching MIDI part."
+    : "This MIDI track has no notes to display.";
   showTrackList();
   refreshNotes();
   await setMonitor($("monitor").value);
@@ -272,11 +320,12 @@ async function select(id, first = false) {
 }
 
 async function setMonitor(id, keep = false) {
+  if (clicks.counting) clicks.cancel();
   const revision = ++monitorID;
   let selected = null, url = null, mixedNotes = null;
   if (id === "@backing" || id === "@custom") {
     const ids = id === "@backing" ? audioStems().filter(item => item.id !== track.id).map(item => item.id) : mixSelection;
-    if (!ids?.length) throw Error("Vyber alespoň jednu zvukovou stopu.");
+    if (!ids?.length) throw Error("Select at least one audio track.");
     const result = await json(`/api/projects/${project.id}/practice`, post({ tracks: ids }));
     selected = { wave: result.wave };
     url = `/api/projects/${project.id}/practice/${result.key}`;
@@ -291,6 +340,7 @@ async function setMonitor(id, keep = false) {
     url = sourceURL(selected.id);
   }
   if (revision !== monitorID) return;
+  const playing = transport.playing;
   playbackMode = id;
   monitor = selected;
   audioWave = monitor?.wave ?? null;
@@ -301,11 +351,65 @@ async function setMonitor(id, keep = false) {
   $("seek").disabled = duration === 0;
   paintTimeline();
   updatePracticeButtons();
-  return true;
+  return { playing };
 }
 
 function audioStems() {
   return project.tracks.filter(item => item.audio && item.id !== project.source);
+}
+
+function setupMidiControls() {
+  const button = $("add-midi"), choice = $("reference-midi");
+  button.disabled = busy || !project;
+  const previous = choice.value;
+  const matches = project?.tracks.filter(item => !item.audio && item.method === "MIDI" && item.count) ?? [];
+  choice.replaceChildren(...matches.map(item => new Option(item.title, item.id)));
+  if (matches.some(item => item.id === previous)) choice.value = previous;
+  $("midi-reference").hidden = !track?.audio || !matches.length;
+  choice.disabled = $("apply-midi").disabled = busy;
+}
+
+function setupMidiActions() {
+  const file = $("add-midi-file"), button = $("add-midi"), apply = $("apply-midi");
+  button.onclick = () => file.click();
+  file.onchange = guarded(async () => {
+    const chosen = file.files?.[0];
+    file.value = "";
+    if (!chosen || !project || busy) return;
+    const data = new FormData();
+    data.set("file", chosen);
+    busyStatus(true, "Reading the MIDI file.");
+    showTrackList();
+    try {
+      project = await json(`/api/projects/${project.id}/midi`, { method: "POST", body: data });
+      changedSession = true;
+      downloadRequested = false;
+      setupMonitorOptions();
+      $("monitor").value = playbackMode;
+      updatePracticeButtons();
+    } finally { busyStatus(false); showTrackList(); }
+  });
+  apply.onclick = guarded(async () => {
+    if (busy || !track?.audio) return;
+    const trackId = track.id, reference = $("reference-midi").value;
+    if (!reference) return;
+    if (drafts.get(trackId)?.edited && !window.confirm("Replace edited notes with this MIDI part?")) return;
+    if (strings()) {
+      parseTuning($("tuning").value);
+      if (!$("frets").reportValidity()) return;
+    }
+    const settings = saveDraft();
+    busyStatus(true, "Applying MIDI notes.");
+    showTrackList();
+    try {
+      project = await json(trackURL(trackId) + "/midi", post({ mode: settings.mode, reference }));
+      const detail = await json(trackURL(trackId));
+      drafts.set(trackId, { ...settings, raw: detail.notes, edited: false, offset: 0, transpose: 0 });
+      changedSession = true;
+      downloadRequested = false;
+      await select(trackId, true);
+    } finally { busyStatus(false); showTrackList(); }
+  });
 }
 
 function setupMonitorOptions() {
@@ -313,24 +417,24 @@ function setupMonitorOptions() {
   const stems = audioStems();
   const midiTracks = project.tracks.filter(item => item.count);
   const options = [];
-  if (project.source) options.push(new Option("Celá skladba", project.source));
+  if (project.source) options.push(new Option("Full mix", project.source));
   for (const item of stems) options.push(new Option(item.title, item.id));
-  options.push(new Option("Vybrané noty", ""));
+  options.push(new Option("Play notes", ""));
   if (stems.length > 1 && stems.some(item => item.id === track.id)) {
-    options.push(new Option("Doprovod bez této stopy", "@backing"));
+    options.push(new Option("Without this track", "@backing"));
   }
   if (!choices.length && midiTracks.length > 1) {
-    options.push(new Option("Všechny MIDI stopy", "@all-midi"),
-      new Option("Doprovod bez této MIDI stopy", "@backing-midi"));
+    options.push(new Option("All MIDI tracks", "@all-midi"),
+      new Option("Without this MIDI track", "@backing-midi"));
   }
-  if (mixSelection?.length) options.push(new Option("Vlastní doprovod", "@custom"));
+  if (mixSelection?.length) options.push(new Option("Custom backing", "@custom"));
   $("monitor").replaceChildren(...options);
   const quickMix = options.some(option => ["@backing", "@backing-midi"].includes(option.value));
   $("monitor-label").hidden = options.length < 2 || quickMix;
   $("mixer").hidden = stems.length < 2;
   $("practice-presets").hidden = !quickMix;
   const list = $("mix-tracks");
-  list.replaceChildren(element("legend", "Stopy pro poslech"));
+  list.replaceChildren(element("legend", "Tracks in the mix"));
   for (const item of stems) {
     const input = element("input");
     input.type = "checkbox";
@@ -344,28 +448,31 @@ function setupMonitorOptions() {
 
 function presetSources() {
   return [project.source ?? "@all-midi", track.audio ? track.id : "",
-    project.source ? "@backing" : "@backing-midi"];
+    project.source ? "@backing" : "@backing-midi", ""];
 }
 
 function updatePracticeButtons() {
   for (const [index, button] of [...$("practice-presets").querySelectorAll("button")].entries()) {
     button.setAttribute("aria-pressed", String(presetSources()[index] === playbackMode));
   }
-  $("mix-summary").textContent = playbackMode === "@custom" ? "Vlastní doprovod je aktivní" : "Vlastní doprovod";
+  $("mix-summary").textContent = playbackMode === "@custom" ? "Custom backing is active" : "Custom backing";
 }
 
 async function changeMonitor(id) {
-  const wasPlaying = transport.playing;
   const prepare = id === "@backing" || id === "@custom";
   $("monitor").value = id;
   if (prepare) {
-    busyStatus(true, "Připravuji doprovod.");
+    busyStatus(true, "Preparing backing track.");
     showTrackList();
   }
   try {
-    if (await setMonitor(id, true)) {
-      await refresh();
-      if (wasPlaying) await transport.play();
+    const changed = await setMonitor(id, true);
+    if (changed) {
+      updateBeatPages();
+      if (!isSheet()) await render();
+      else syncLoop();
+      setupButtons();
+      if (changed.playing) await transport.play();
     }
   } catch (error) {
     $("monitor").value = playbackMode;
@@ -430,14 +537,21 @@ async function refresh({ first = false } = {}) {
     if (revision !== refreshID) return;
     positions = result.positions;
   }
-  const duration = Math.max(.1, transport.duration, ...notes.map(note => note.end));
-  pages = beatGrid(rhythm.tempo, rhythm.meter, rhythm.phase, duration);
+  updateBeatPages();
   if (first && notes.length) {
     page = pageFor(notes[0].start);
     transport.seek(Math.min(notes[0].start, transport.duration));
-  } else page = Math.min(page, pages.length - 1);
+  }
   setupButtons();
   await render(true);
+}
+
+function updateBeatPages() {
+  const duration = Math.max(.1, transport.duration, ...notes.map(note => note.end));
+  pages = beatGrid(rhythm.tempo, rhythm.meter, rhythm.phase, duration);
+  beats = pages.flatMap(segment => segment.ticks).filter(tick => tick.time < transport.duration);
+  bars = beats.filter(tick => tick.beat === 1);
+  page = pageFor(transport.position);
 }
 
 function pageFor(time) {
@@ -465,7 +579,7 @@ function graph(segment, items, lanes) {
   root.classList.toggle("drums", mode() === "drums");
   root.classList.toggle("piano", mode() === "piano");
   const ruler = element("div", "", "grid-ruler");
-  const rulerLabel = element("span", "Doby", "grid-label");
+  const rulerLabel = element("span", "Beats", "grid-label");
   ruler.append(rulerLabel);
   const columns = element("div", "", "grid-body ruler-columns");
   columns.style.top = "0";
@@ -511,7 +625,7 @@ function graph(segment, items, lanes) {
     button.type = "button";
     button.title = `${mode() === "drums" ? drumName(note.pitch) : pitchName(note.pitch)} / ${clock(note.start)}`;
     button.setAttribute("aria-label", view === "tab"
-      ? `${button.title}, struna ${position.string + 1}, pražec ${position.fret}` : button.title);
+      ? `${button.title}, string ${position.string + 1}, fret ${position.fret}` : button.title);
     button.style.top = `calc(${row} * var(--row-height) + .14rem)`;
     button.style.left = percent(Math.max(segment.start, note.start));
     button.style.width = percent(segment.start + Math.min(segment.end, note.end) - Math.max(segment.start, note.start));
@@ -523,9 +637,22 @@ function graph(segment, items, lanes) {
 
 function editTable(items) {
   if (!$("edit").open) return;
-  const labels = [mode() === "drums" ? "Úder MIDI" : "Tón MIDI", "Začátek (s)", "Konec (s)"];
-  if (strings()) labels.push("Struna");
+  const labels = [mode() === "drums" ? "MIDI drum hit" : "MIDI pitch", "Start (s)", "End (s)"];
+  if (strings()) labels.push("String", "Note head", "Slide in", "Palm mute");
   labels.push("");
+  // Written techniques change notation only. Playback and MIDI stay unchanged.
+  const techniques = [
+    ["head", "Note head", [["", "Normal"], ["ghost", "Ghost (n)"], ["dead", "Dead (x)"]]],
+    ["slideIn", "Slide in", [["", "None"], ["up", "From below (/)"], ["down", "From above (\\)"]]],
+  ];
+  const setTechnique = async (note, field, value) => {
+    const draft = saveDraft(), raw = draft.raw[rawIndex(draft, note)];
+    if (value) raw[field] = value;
+    else delete raw[field];
+    draft.edited = true;
+    downloadRequested = false;
+    await refresh();
+  };
   const table = element("table"), head = element("thead"), row = element("tr");
   row.append(...labels.map(label => {
     const th = element("th", label);
@@ -544,13 +671,13 @@ function editTable(items) {
       input.max = field === "pitch" ? "127" : "3600";
       input.step = field === "pitch" ? "1" : "0.001";
       input.value = Number(note[field].toFixed(3));
-      input.setAttribute("aria-label", `${labels[index]} noty v ${clock(note.start)}`);
+      input.setAttribute("aria-label", `${labels[index]} for note at ${clock(note.start)}`);
       input.addEventListener("change", guarded(async () => {
         if (!input.reportValidity()) return;
         const value = Number(input.value);
         if ((field === "start" && value >= note.end) || (field === "end" && value <= note.start)) {
           input.value = note[field];
-          throw Error("Konec noty musí následovat po začátku.");
+          throw Error("A note must end after it starts.");
         }
         const draft = saveDraft(), raw = draft.raw[rawIndex(draft, note)];
         raw[field] = value - (field === "pitch" ? draft.transpose : draft.offset);
@@ -563,8 +690,8 @@ function editTable(items) {
     });
     if (strings()) {
       const cell = element("td"), choice = element("select");
-      choice.setAttribute("aria-label", `Struna noty v ${clock(note.start)}`);
-      choice.append(new Option("Automaticky", ""));
+      choice.setAttribute("aria-label", `String for note at ${clock(note.start)}`);
+      choice.append(new Option("Automatic", ""));
       const maxFret = Number($("frets").value);
       tuning.forEach((pitch, index) => {
         const fret = note.pitch - pitch;
@@ -573,7 +700,7 @@ function editTable(items) {
         }
       });
       if (note.raw.string !== undefined && ![...choice.options].some(option => +option.value === note.raw.string && option.value)) {
-        choice.append(new Option("Mimo ladění", note.raw.string));
+        choice.append(new Option("Outside tuning", note.raw.string));
       }
       choice.value = note.raw.string ?? "";
       choice.addEventListener("change", guarded(async () => {
@@ -586,10 +713,26 @@ function editTable(items) {
       }));
       cell.append(choice);
       tr.append(cell);
+      for (const [field, label, options] of techniques) {
+        const cell = element("td"), choice = element("select");
+        choice.setAttribute("aria-label", `${label} for note at ${clock(note.start)}`);
+        choice.append(...options.map(([value, text]) => new Option(text, value)));
+        choice.value = note.raw[field] ?? "";
+        choice.addEventListener("change", guarded(() => setTechnique(note, field, choice.value)));
+        cell.append(choice);
+        tr.append(cell);
+      }
+      const muteCell = element("td"), mute = element("input");
+      mute.type = "checkbox";
+      mute.checked = note.raw.palmMute === true;
+      mute.setAttribute("aria-label", `Palm mute for note at ${clock(note.start)}`);
+      mute.addEventListener("change", guarded(() => setTechnique(note, "palmMute", mute.checked)));
+      muteCell.append(mute);
+      tr.append(muteCell);
     }
-    const cell = element("td"), remove = element("button", "Smazat");
+    const cell = element("td"), remove = element("button", "Delete");
     remove.type = "button";
-    remove.setAttribute("aria-label", `Smazat notu v ${clock(note.start)}`);
+    remove.setAttribute("aria-label", `Delete note at ${clock(note.start)}`);
     remove.addEventListener("click", guarded(async () => {
       const draft = saveDraft();
       const index = rawIndex(draft, note);
@@ -658,6 +801,7 @@ async function drawScore(atCursor) {
     lastSheetHeight = image.offsetHeight;
     marks = drawn.markers;
     sheetMeasures = drawn.measures;
+    moveSheetCursor = drawn.moveCursor;
     if (sheetMeasures.length) {
       page = pageFor(sheetMeasures[0].start);
       editTable(localNotes(pages[page]));
@@ -679,28 +823,29 @@ function pager() {
   const current = pages[page];
   const label = $("page-label");
   label.textContent = isSheet() ? (sheetMeasures.length
-    ? `Takt ${sheetMeasures[0].number}–${sheetMeasures.at(-1).number}` : `${scorePage} / ${scoreCount}`)
-    : current?.first ? `Takt ${current.first}–${current.last}` : "Před první dobou";
-  label.title = isSheet() ? `Strana ${scorePage} z ${scoreCount}` : "";
+    ? `Bars ${sheetMeasures[0].number}–${sheetMeasures.at(-1).number}` : `${scorePage} / ${scoreCount}`)
+    : current?.first ? `Bars ${current.first}–${current.last}` : "Before the first beat";
+  label.title = isSheet() ? `Page ${scorePage} of ${scoreCount}` : "";
   $("previous").disabled = isSheet() ? scorePage <= 1 : page <= 0;
   $("next").disabled = isSheet() ? scorePage >= scoreCount : page >= pages.length - 1;
 }
 
 function syncLoop(reselect = false) {
-  if ($("loop").getAttribute("aria-pressed") !== "true") transport.loop = null;
-  else if (!transport.loop || reselect) {
-    const now = transport.position;
-    let range;
-    if (isSheet()) {
-      range = sheetMeasures.find(({ start, end }) => now >= start && now < end) ?? sheetMeasures[0];
-    } else {
-      const segment = pages[page];
-      const bars = segment?.ticks.filter(tick => tick.beat === 1) ?? [];
-      const index = bars.findLastIndex(tick => tick.time <= now);
-      range = segment ? { start: bars[index]?.time ?? segment.start, end: bars[index + 1]?.time ?? segment.end } : null;
-    }
-    const end = Math.min(transport.duration, range?.end ?? 0);
-    transport.loop = range && end > range.start ? { start: range.start, end } : null;
+  const enabled = $("loop").getAttribute("aria-pressed") === "true" && bars.length && notes.length;
+  $("loop-range").hidden = !enabled;
+  if (!enabled) transport.loop = null;
+  else if (!transport.loop || reselect || selectedLoop) {
+    const current = Math.max(0, bars.findLastIndex(bar => bar.time <= transport.position));
+    const first = Math.min(bars.length, selectedLoop?.[0] ?? current + 1);
+    const last = Math.min(bars.length, selectedLoop?.[1] ?? first);
+    transport.loop = { start: bars[first - 1].time, end: bars[last]?.time ?? transport.duration };
+    $("loop-from").value = first;
+    $("loop-through").value = last;
+    $("loop-from").max = $("loop-through").max = bars.length;
+  }
+  for (const { group, start } of sheetMeasures) {
+    group.classList.toggle("is-looped", Boolean(transport.loop
+      && start >= transport.loop.start - .002 && start < transport.loop.end - .002));
   }
 }
 
@@ -718,11 +863,10 @@ async function render(atCursor = false) {
     $("score-image").hidden = true;
     $("score-stage").hidden = true;
   }
-  $("loop").disabled = false;
   const unplaced = positions.filter(position => position === null).length;
   $("placement").textContent = view === "tab" ? unplaced
-    ? `${tuning.length} strun / ${unplaced} not bez hratelné polohy v tomto ladění či souzvuku.`
-    : `${tuning.length} strun / navržený prstoklad` : "";
+    ? `${tuning.length} strings / ${unplaced} notes with no playable position in this tuning or chord.`
+    : `${tuning.length} strings / suggested fingering` : "";
   editTable(items);
   pager();
   syncLoop();
@@ -735,10 +879,19 @@ async function render(atCursor = false) {
   }
 }
 
+function updatePlayButton(playing) {
+  const label = clicks.counting ? "Counting…" : playing ? "Pause" : "Play";
+  if ($("play-label").textContent !== label) {
+    $("play-label").textContent = label;
+    $("play").setAttribute("aria-label", clicks.counting ? "Cancel count-in" : label);
+    $("play-icon").setAttribute("href", `/assets/icons.svg#${clicks.counting ? "stop" : playing ? "pause" : "play"}`);
+  }
+}
+
 function positionChanged(position, playing) {
   $("time").textContent = clock(position);
   $("seek").value = position;
-  $("play").textContent = playing ? "Pozastavit" : "Přehrát";
+  updatePlayButton(playing);
   $("wave-head").style.left = `${100 * position / Math.max(.01, transport.duration)}%`;
   const segment = pages[page], line = $("playhead");
   if (segment && line) {
@@ -748,15 +901,57 @@ function positionChanged(position, playing) {
   for (const { note, button } of marks) {
     button.classList.toggle("playing", note.start <= position && note.end > position);
   }
+  let currentMeasure;
   if (isSheet()) {
-    for (const { group, start, end } of sheetMeasures) {
-      group.classList.toggle("is-current", position >= start && position < end);
+    for (const measure of sheetMeasures) {
+      const current = position >= measure.start && position < measure.end;
+      measure.group.classList.toggle("is-current", current);
+      if (current) currentMeasure = measure;
     }
+    moveSheetCursor?.(currentMeasure, position);
   }
   if (!isSheet() && mode() === "piano") {
     const active = new Set(marks.filter(({ note }) => note.start <= position && note.end > position)
       .map(({ note }) => note.pitch));
     for (const key of $("grid").querySelectorAll(".piano-key")) key.classList.toggle("playing", active.has(Number(key.dataset.pitch)));
+  }
+  if (playing && $("follow").checked && notes.length) followPlayback(position, currentMeasure);
+  else followedElement = null;
+  if (playing && $("metronome").checked && (!transport.source
+      || (transport.audio.readyState >= 2 && !transport.audio.paused && !transport.audio.seeking))) {
+    const offset = metronomeOffset() / 1000;
+    clicks.follow(beats, position - offset, transport.speed, (transport.loop?.end ?? Infinity) - offset);
+  } else if (!playing && !clicks.counting) clicks.reset();
+}
+
+function followPlayback(position, currentMeasure) {
+  const stopFollowing = error => { $("follow").checked = false; showError(error); };
+  if (isSheet() && !currentMeasure) {
+    const first = sheetMeasures[0], last = sheetMeasures.at(-1);
+    if (first && last && $("score-stage").getAttribute("aria-busy") === "false"
+        && ((position < first.start && scorePage > 1) || (position >= last.end && scorePage < scoreCount))) {
+      drawScore(true).catch(stopFollowing);
+    }
+    return;
+  }
+  if (!isSheet()) {
+    const next = pageFor(position);
+    if (next !== page) {
+      page = next;
+      render().catch(stopFollowing);
+      return;
+    }
+  }
+  const target = currentMeasure ? currentMeasure.group.closest("g.system") ?? currentMeasure.group : $("graph");
+  if (target === followedElement) return;
+  followedElement = target;
+  const toolbar = document.querySelector(".player-toolbar");
+  const offset = getComputedStyle(toolbar).position === "sticky" ? toolbar.offsetHeight + 8 : 8;
+  const { top, bottom } = target.getBoundingClientRect();
+  if (top < offset || bottom > innerHeight - 16) {
+    const delta = top - offset;
+    const behavior = reducedMotion.matches || Math.abs(delta) > innerHeight * 2 ? "instant" : "smooth";
+    window.scrollBy({ top: delta, behavior });
   }
 }
 
@@ -783,9 +978,54 @@ function download(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+async function printScore() {
+  if (preparingPrint || $("print-score")) return;
+  preparingPrint = true;
+  setupButtons();
+  const urls = [];
+  const section = element("section");
+  section.id = "print-score";
+  const title = document.title;
+  const useTab = view === "tab";
+  const dispose = () => {
+    section.remove();
+    document.title = title;
+    urls.forEach(url => URL.revokeObjectURL(url));
+  };
+  try {
+    section.append(element("h1", project.title),
+      element("p", useTab ? `${track.title} · ${tuning.map(pitchName).join(" ")}` : track.title));
+    const { pages: printPages } = await json("/api/export/print", post(scoreData(useTab).body));
+    const images = printPages.map(svg => {
+      const image = element("img");
+      image.alt = "";
+      const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+      urls.push(url);
+      image.src = url;
+      return image;
+    });
+    await Promise.all(images.map(image => image.decode()));
+    section.append(...images);
+    document.body.append(section);
+    document.title = section.firstElementChild.textContent;
+    window.addEventListener("afterprint", dispose, { once: true });
+    window.print();
+  } catch (error) {
+    window.removeEventListener("afterprint", dispose);
+    dispose();
+    throw error;
+  } finally {
+    preparingPrint = false;
+    setupButtons();
+  }
+}
+
 function textTab() {
-  const lines = [project.title, `Ladění: ${tuning.map(pitchName).join(" ")}`,
-    "Každý sloupec má čas noty a takt.dobu."];
+  const lines = [project.title, `Tuning: ${tuning.map(pitchName).join(" ")}`,
+    "Each column shows the note time and bar.beat."];
+  if (notes.some(note => note.head || note.slideIn || note.palmMute)) {
+    lines.push("Signs: (3) ghost note, x dead note, /3 slide up into, \\3 slide down into, PM palm mute.");
+  }
   const ticks = pages.flatMap(segment => segment.ticks);
   let beat = 0;
   for (let i = 0; i < notes.length; i += 10) {
@@ -796,20 +1036,27 @@ function textTab() {
       const tick = ticks[beat];
       return (tick?.time <= note.start + .001 ? `${tick.bar}.${tick.beat}` : "·").padStart(8);
     }).join(" "));
+    if (subset.some(note => note.palmMute)) {
+      lines.push("  PM|" + subset.map(note => (note.palmMute ? "PM" : "").padStart(8)).join(" "));
+    }
     for (let string = tuning.length - 1; string >= 0; string--) {
-      const values = subset.map((_, offset) => {
+      const values = subset.map((note, offset) => {
         const position = positions[i + offset];
-        return (position?.string === string ? String(position.fret) : "·").padStart(8);
+        if (position?.string !== string) return "·".padStart(8);
+        const fret = note.head === "dead" ? "x" : String(position.fret);
+        const slide = { up: "/", down: "\\" }[note.slideIn] ?? "";
+        return (slide + (note.head === "ghost" ? `(${fret})` : fret)).padStart(8);
       });
       lines.push(pitchName(tuning[string]).padStart(4) + "|" + values.join(" "));
     }
     const missing = subset.map((note, offset) => positions[i + offset] ? null
       : `${clock(note.start)} ${pitchName(note.pitch)}`).filter(Boolean);
-    if (missing.length) lines.push("Bez hratelné polohy: " + missing.join(", "));
+    if (missing.length) lines.push("No playable position: " + missing.join(", "));
   }
   return lines.join("\n");
 }
 
+$("backing-controls").open = !matchMedia("(max-width: 48rem)").matches;
 function importDialog() { $("import-dialog").showModal(); }
 $("open").onclick = $("empty-open").onclick = importDialog;
 $("cancel-import").onclick = () => $("import-dialog").close();
@@ -824,14 +1071,14 @@ async function openFiles(files) {
   const archive = files.find(file => file.name.toLowerCase().endsWith(".zip"));
   if (archive && files.length > 1) {
     $("import-dialog").close();
-    throw Error("Uloženou relaci otevři samostatně.");
+    throw Error("Open a saved session on its own.");
   }
   const restore = new FormData();
   if (archive) restore.append("project", archive);
   if (!allowReplacement()) return;
   $("import-dialog").close();
   $("import-form").reset();
-  busyStatus(true, "Načítám soubor.");
+  busyStatus(true, "Loading file.");
   try {
     await loadProject(await json(archive ? "/api/restore" : "/api/projects", {
       method: "POST", body: archive ? restore : form,
@@ -854,7 +1101,7 @@ dropZone.addEventListener("drop", guarded(async event => {
 }));
 $("demo").onclick = guarded(async () => {
   if (busy || !allowReplacement()) return;
-  busyStatus(true, "Připravuji studiovou ukázku.");
+  busyStatus(true, "Preparing studio demo.");
   try {
     await loadProject(await json("/api/demo", { method: "POST" }));
   } finally { busyStatus(false); }
@@ -874,9 +1121,11 @@ $("save-project").onclick = guarded(async () => {
   const id = project.id;
   const practice = { monitor: playbackMode, mix: mixSelection ?? [], view,
     loop: $("loop").getAttribute("aria-pressed") === "true",
+    ...(selectedLoop ? { loopRange: selectedLoop } : {}),
+    metronomeOffset: metronomeOffset(),
     speed: transport.speed, position: transport.position };
   const data = { ...rhythm, active: track.id, edits, practice };
-  busyStatus(true, "Připravuji uložení relace.");
+  busyStatus(true, "Preparing session download.");
   try {
     project = await waitForWork(await json(`/api/projects/${id}/save`, post(data)));
     const link = element("a");
@@ -903,7 +1152,7 @@ $("separate").onclick = guarded(async () => {
 
 $("transcribe").onclick = guarded(async () => {
   const trackId = track.id, selected = mode();
-  if (drafts.get(trackId)?.edited && !window.confirm("Nahradit ručně upravené noty novým přepisem?")) return;
+  if (drafts.get(trackId)?.edited && !window.confirm("Replace edited notes with a new transcription?")) return;
   const pitches = strings() ? parseTuning($("tuning").value) : [];
   if (strings() && !$("frets").reportValidity()) return;
   const minimum = pitches.length ? Math.min(...pitches) : selected === "piano" ? 21 : selected === "violin" ? 55 : 21;
@@ -957,7 +1206,7 @@ $("rhythm-form").onsubmit = guarded(async event => {
   rhythm = { tempo: [{ time: 0, bpm }, ...rhythm.tempo.slice(1)],
     meter: [{ time: 0, numerator: Number($("numerator").value),
       denominator: Number($("denominator").value) }, ...rhythm.meter.slice(1)],
-    phase: Number($("phase").value), timing: "Vlastní mřížka" };
+    phase: Number($("phase").value), timing: "Custom rhythm grid" };
   changedSession = true;
   downloadRequested = false;
   rhythmFields();
@@ -978,12 +1227,12 @@ for (const button of document.querySelectorAll("[data-view]")) {
 $("monitor").onchange = guarded(async () => {
   await changeMonitor($("monitor").value);
 });
-for (const [index, id] of ["practice-all", "practice-solo", "practice-backing"].entries()) {
+for (const [index, id] of ["practice-all", "practice-solo", "practice-backing", "practice-notes"].entries()) {
   $(id).onclick = guarded(() => changeMonitor(presetSources()[index]));
 }
 $("apply-mix").onclick = guarded(async () => {
   const selected = [...$("mix-tracks").querySelectorAll("input:checked")].map(input => input.value);
-  if (!selected.length) throw Error("Vyber alespoň jednu stopu pro poslech.");
+  if (!selected.length) throw Error("Select at least one track for playback.");
   mixSelection = selected;
   setupMonitorOptions();
   await changeMonitor("@custom");
@@ -998,7 +1247,45 @@ $("wave").onclick = guarded(async event => {
   await render(true);
 });
 $("first-note").onclick = guarded(async () => { transport.seek(notes[0].start); page = pageFor(notes[0].start); await render(true); });
-$("play").onclick = guarded(() => transport.playing ? transport.pause() : transport.play());
+$("play").onclick = guarded(async () => {
+  if (clicks.counting) { clicks.cancel(); return; }
+  if (transport.playing) { transport.pause(); return; }
+  if (!$("count-in").checked || $("count-in").disabled) { await transport.play(); return; }
+  const time = transport.loop && (transport.position < transport.loop.start || transport.position >= transport.loop.end)
+    ? transport.loop.start : transport.position >= transport.duration ? 0 : transport.position;
+  const bar = bars.findLast(tick => tick.time <= time) ?? bars[0];
+  if (!bar) { await transport.play(); return; }
+  const relative = bar.time - rhythm.phase;
+  const signature = rhythm.meter.findLast(row => row.time <= relative + .00001) ?? rhythm.meter[0];
+  const tempo = rhythm.tempo.findLast(row => row.time <= relative + .00001) ?? rhythm.tempo[0];
+  const interval = 240 / (tempo.bpm * signature.denominator);
+  transport.seek(time);
+  await clicks.countIn({ beats, position: time - metronomeOffset() / 1000, interval,
+    count: signature.numerator, speed: transport.speed,
+    audio: transport.source ? transport.audio : null }, () => transport.play());
+});
+$("metronome").onchange = guarded(async () => {
+  if (!$("metronome").checked) { if (!clicks.counting) clicks.reset(); return; }
+  try { await clicks.prepare(); } catch (error) { $("metronome").checked = false; throw error; }
+});
+$("follow").onchange = () => {
+  if (!$("follow").checked) window.scrollTo({ top: scrollY, behavior: "instant" });
+  positionChanged(transport.position, transport.playing);
+};
+$("metronome-offset").addEventListener("change", event => {
+  if (event.currentTarget.reportValidity()) clicks.cancel();
+});
+for (const id of ["volume", "metronome-volume"]) {
+  $(id).oninput = event => {
+    const input = event.currentTarget, level = input.valueAsNumber / 100;
+    const percent = `${input.value}%`;
+    input.setAttribute("aria-valuetext", percent);
+    $(`${id}-value`).value = percent;
+    if (id === "volume") transport.setVolume(level);
+    else clicks.setVolume(level);
+  };
+}
+$("pdf").onclick = guarded(printScore);
 document.addEventListener("keydown", event => {
   if (event.code !== "Space" || event.repeat || $("play").disabled || $("studio").hidden
       || $("import-dialog").open || event.target.closest("button, input, select, textarea, summary, a, [role=button]")) return;
@@ -1023,8 +1310,20 @@ $("loop").onclick = () => {
   syncLoop(true);
   if (transport.loop && (transport.position < transport.loop.start || transport.position >= transport.loop.end)) {
     transport.seek(transport.loop.start);
-  }
+  } else if (transport.playing || clicks.counting) transport.seek(transport.position);
 };
+$("loop-range").onsubmit = guarded(event => {
+  event.preventDefault();
+  const first = $("loop-from").valueAsNumber, last = $("loop-through").valueAsNumber;
+  if (!Number.isInteger(first) || !Number.isInteger(last) || first < 1 || last < first || last > bars.length) {
+    throw Error("Choose a first and last bar in order.");
+  }
+  selectedLoop = [first, last];
+  syncLoop(true);
+  transport.seek(transport.loop.start);
+  page = pageFor(transport.position);
+  return render(true);
+});
 $("edit").ontoggle = () => pages[page] && editTable(localNotes(pages[page]));
 $("add-note").onclick = guarded(async () => {
   const draft = saveDraft(), start = pages[page].start - draft.offset;
@@ -1033,8 +1332,8 @@ $("add-note").onclick = guarded(async () => {
   downloadRequested = false;
   await refresh();
 });
-$("txt").onclick = () => download(new Blob([textTab()], { type: "text/plain;charset=utf-8" }), "prepis.txt");
-for (const [button, kind, filename] of [["midi", "midi", "prepis.mid"], ["xml", "musicxml", "prepis.musicxml"]]) {
+$("txt").onclick = () => download(new Blob([textTab()], { type: "text/plain;charset=utf-8" }), "transcription.txt");
+for (const [button, kind, filename] of [["midi", "midi", "transcription.mid"], ["xml", "musicxml", "transcription.musicxml"]]) {
   $(button).onclick = guarded(async () => {
     const { body: data } = scoreData(kind === "musicxml" && view === "tab");
     if (kind === "midi") data.notes = serialNotes(notes);
@@ -1061,6 +1360,7 @@ function paintTimeline() {
 }
 new ResizeObserver(paintTimeline).observe($("wave"));
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", paintTimeline);
+document.addEventListener("themechange", paintTimeline);
 let sheetWidth = 0, reflow;
 new ResizeObserver(([entry]) => {
   const width = Math.round(entry.contentRect.width);
@@ -1074,4 +1374,5 @@ new ResizeObserver(([entry]) => {
     }, 150);
   }
 }).observe($("results"));
+setupMidiActions();
 setupButtons();

@@ -5,7 +5,7 @@ from collections import defaultdict
 from io import BytesIO
 from math import isfinite
 from statistics import median
-from typing import TypedDict
+from typing import Literal, NotRequired, TypedDict
 from xml.etree import ElementTree as ET
 
 import mido
@@ -16,6 +16,11 @@ class Note(TypedDict):
     end: float
     pitch: int
     velocity: int
+    # Written string techniques change notation only, never MIDI. slideIn is an
+    # indeterminate slide into this note, not a slide between two notes.
+    head: NotRequired[Literal["ghost", "dead"]]
+    slideIn: NotRequired[Literal["up", "down"]]
+    palmMute: NotRequired[bool]
 
 
 class Tempo(TypedDict):
@@ -213,12 +218,15 @@ def _span(
     staff: int,
     positions: list[Position | None] | None,
     tuning: list[int] | None,
+    notes: list[Note],
 ) -> None:
     while start < end:
         duration, kind, dotted = next(
             item for item in _DURATIONS if item[0] <= end - start
         )
         for index, (pitch, identity) in enumerate(pitches or [(-1, -1)]):
+            # Techniques belong to the attack, so tied continuations stay plain.
+            mark = notes[identity] if pitch >= 0 and start == onset else None
             note = ET.SubElement(measure, "note")
             if index:
                 ET.SubElement(note, "chord")
@@ -243,16 +251,31 @@ def _span(
             _tag(note, "type", kind)
             if dotted:
                 ET.SubElement(note, "dot")
+            if mark is not None and (head := mark.get("head")):
+                notehead = ET.SubElement(note, "notehead")
+                notehead.text = "x" if head == "dead" else "normal"
+                if head == "ghost":
+                    notehead.set("parentheses", "yes")
             _tag(note, "staff", staff)
             placement = positions[identity] if positions is not None and identity >= 0 else None
-            if ties or placement:
+            slide = mark.get("slideIn") if mark is not None else None
+            muted = mark is not None and mark.get("palmMute", False)
+            if ties or placement or slide or muted:
                 notations = ET.SubElement(note, "notations")
                 for tie in ties:
                     ET.SubElement(notations, "tied", type=tie)
-                if placement is not None and tuning is not None:
+                if slide:
+                    # Scoop and plop are MusicXML's indeterminate slides into a note.
+                    articulations = ET.SubElement(notations, "articulations")
+                    ET.SubElement(articulations, "scoop" if slide == "up" else "plop")
+                fingered = placement is not None and tuning is not None
+                if fingered or muted:
                     technical = ET.SubElement(notations, "technical")
-                    _tag(technical, "string", len(tuning) - placement["string"])
-                    _tag(technical, "fret", placement["fret"])
+                    if placement is not None and tuning is not None:
+                        _tag(technical, "string", len(tuning) - placement["string"])
+                        _tag(technical, "fret", placement["fret"])
+                    if muted:
+                        _tag(technical, "other-technical", "P.M.")
         start += duration
 
 
@@ -350,7 +373,7 @@ def musicxml(
                 ET.SubElement(direction, "direction-type"), "metronome"
             )
             _tag(mark, "beat-unit", "quarter")
-            _tag(mark, "per-minute", str(tempos[tick]))
+            _tag(mark, "per-minute", f"{tempos[tick]:.2f}".rstrip("0").rstrip("."))
             if tick != start:
                 offset = ET.SubElement(direction, "offset", sound="yes")
                 offset.text = str(tick - start)
@@ -367,7 +390,7 @@ def musicxml(
                 cursor = start
                 while index < len(lane) and lane[index][0] < end:
                     onset, release, chord = lane[index]
-                    _span(measure, cursor, onset, 0, 0, [], voice, staff, tab_positions, tuning)
+                    _span(measure, cursor, onset, 0, 0, [], voice, staff, tab_positions, tuning, notes)
                     cursor = min(end, release)
                     _span(
                         measure,
@@ -380,12 +403,13 @@ def musicxml(
                         staff,
                         tab_positions,
                         tuning,
+                        notes,
                     )
                     if release > end:
                         break
                     index += 1
                 positions[voice] = index
-                _span(measure, cursor, end, 0, 0, [], voice, staff, tab_positions, tuning)
+                _span(measure, cursor, end, 0, 0, [], voice, staff, tab_positions, tuning, notes)
         _beam(measure, n, d)
         start = end
         number += 1

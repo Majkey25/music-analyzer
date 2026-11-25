@@ -15,9 +15,9 @@ from .notation import Note
 AUDIO_FORMATS = {".wav": "wav", ".mp3": "mp3", ".flac": "flac"}
 MAX_DURATION = 900
 STEMS = {
-    "bass": ("Basa", "bass"), "guitar": ("Kytara", "guitar"),
-    "drums": ("Bicí", "drums"), "piano": ("Klavír", "piano"),
-    "vocals": ("Zpěv", "melody"), "other": ("Ostatní", "melody"),
+    "bass": ("Bass", "bass"), "guitar": ("Guitar", "guitar"),
+    "drums": ("Drums", "drums"), "piano": ("Piano", "piano"),
+    "vocals": ("Vocals", "melody"), "other": ("Other", "melody"),
 }
 
 
@@ -30,7 +30,7 @@ class Wave:
 def normalize(source: Path, target: Path) -> None:
     ffmpeg = shutil.which("ffmpeg")
     if not ffmpeg:
-        raise ValueError("Chybí FFmpeg. Nainstaluj jej a přidej do PATH.")
+        raise ValueError("FFmpeg is missing. Install it and add it to PATH.")
     args = [
         ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
         "-protocol_whitelist", "file,pipe", "-f", AUDIO_FORMATS[source.suffix],
@@ -41,10 +41,10 @@ def normalize(source: Path, target: Path) -> None:
     try:
         subprocess.run(args, check=True, capture_output=True, timeout=120)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        raise ValueError("Soubor se nepodařilo přečíst. Zkus platný WAV, MP3 nebo FLAC.") from None
+        raise ValueError("Could not read the file. Try a valid WAV, MP3, or FLAC.") from None
     duration = sf.info(target).duration
     if not 0 < duration <= MAX_DURATION:
-        raise ValueError("Vlož audio dlouhé nejvýš 15 minut.")
+        raise ValueError("Choose audio that is 15 minutes or shorter.")
 
 
 def waveform(path: Path) -> Wave:
@@ -127,22 +127,22 @@ def separator():
         from demucs_infer import DemucsSeparator
     except ModuleNotFoundError as error:
         if error.name == "demucs_infer":
-            raise ValueError("Separace vyžaduje instalaci „uv sync --extra separation“.") from None
+            raise ValueError("Run uv sync --extra separation to install track separation.") from None
         raise
     return DemucsSeparator(model="htdemucs_6s", device="cpu", shifts=0)
 
 
 def separate(path: Path, directory: Path, progress: Callable[[str], None]) -> dict[str, Path]:
-    progress("Načítám šestistopý model. Poprvé se stáhnou jeho váhy.")
+    progress("Loading the six-track model. The first run downloads the model weights.")
     engine = separator()
     mix, rate = sf.read(path, dtype="float32", always_2d=True)
     import torch
 
-    progress("Odděluji stopy. U delší skladby to může trvat několik minut.")
+    progress("Separating tracks. Longer songs can take several minutes.")
     _, result = engine(torch.from_numpy(mix.T.copy()), sample_rate=rate)
     if set(result) != set(STEMS):
-        raise RuntimeError("Model nevrátil všech šest stop.")
-    progress("Ukládám oddělené stopy.")
+        raise RuntimeError("The model did not return all six tracks.")
+    progress("Saving separated tracks.")
     paths = {}
     for key, samples in result.items():
         destination = directory / f"{key}.wav"
