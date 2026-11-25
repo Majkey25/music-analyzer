@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python 3.12 on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1db35dd8eee11c5894872e0b383ae6c406cf738d # v10.4.0
+        with:
+          version: "0.13.10"
+          python-version: "3.12"
+      - run: uv sync --locked --extra separation
+      - run: uv run --no-sync ruff check
+      - run: uv run --no-sync pyright
+      - run: uv run --no-sync python -m unittest discover -s tests
+      - run: uv run --no-sync python -m tests.model_checks
+      - if: runner.os == 'Linux'
+        run: uv run --no-sync playwright install --with-deps chromium
+      - if: runner.os == 'Windows'
+        run: uv run --no-sync playwright install chromium
+      - run: uv run --no-sync python -m tests.browser_checks

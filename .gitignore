@@ -1,0 +1,8 @@
+.venv/
+.reference/
+__pycache__/
+.ruff_cache/
+.pytest_cache/
+.coverage
+*.py[cod]
+dist/

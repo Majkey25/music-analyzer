@@ -1,0 +1,1 @@
+"""Music Analyzer local studio."""

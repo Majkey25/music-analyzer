@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Music Analyzer</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+  <header class="mast">
+    <div class="brand"><img src="/assets/icon.svg" alt="" width="38" height="38"><h1>Music Analyzer</h1></div>
+    <div class="actions">
+      <button id="close" type="button" hidden>Zavřít relaci</button>
+      <button id="save-project" type="button" hidden>Uložit relaci</button>
+      <button id="open" type="button" class="primary">Otevřít soubor</button>
+    </div>
+  </header>
+  <dialog id="import-dialog">
+    <form id="import-form">
+      <h2>Otevřít soubor</h2>
+      <p>Vyber skladbu, izolovanou stopu nebo uloženou relaci. Audio a MIDI můžeš načíst společně.</p>
+      <label for="files">WAV, MP3, FLAC, MIDI nebo ZIP relace</label>
+      <input id="files" name="files" type="file" accept=".wav,.mp3,.flac,.mid,.midi,.zip" multiple required>
+      <div class="actions"><button id="cancel-import" type="button">Zpět</button><button class="primary">Načíst</button></div>
+    </form>
+  </dialog>
+  <main>
+    <section id="empty" class="intro">
+        <h2>Otevřít skladbu nebo relaci</h2>
+        <p>WAV, MP3, FLAC, MIDI nebo vlastní soubor relace.</p>
+        <div class="actions">
+        <button id="empty-open" class="primary" type="button">Vybrat nahrávku nebo MIDI</button>
+        <button id="demo" type="button">Studiová ukázka</button>
+        </div>
+    </section>
+    <div class="activity">
+      <progress id="progress" aria-label="Zpracování projektu" hidden></progress>
+      <p id="status" role="status"></p>
+      <p id="error" role="alert"></p>
+    </div>
+    <div id="studio" class="studio" hidden>
+      <aside class="tracks" aria-label="Stopy">
+        <h2>Stopy</h2>
+        <ul id="tracks"></ul>
+        <button id="separate" type="button" hidden>Oddělit stopy</button>
+      </aside>
+      <div class="session">
+        <section class="transport" aria-labelledby="project-title">
+          <div class="section-head">
+            <div><h2 id="project-title"></h2><p id="track-description" class="muted"></p></div>
+            <output id="time" aria-label="Pozice">0:00.00</output>
+          </div>
+          <div class="waveform">
+            <canvas id="wave" aria-hidden="true"></canvas>
+            <span id="wave-head" aria-hidden="true"></span>
+            <input id="seek" aria-label="Pozice přehrávání" type="range" value="0" min="0" max="1" step="0.01">
+          </div>
+          <audio id="player" preload="metadata"></audio>
+        </section>
+        <section class="player-toolbar" aria-label="Přehrávání a doprovod">
+          <div class="transport-controls">
+            <button id="play" type="button" class="primary" title="Přehrát nebo pozastavit (mezerník)" aria-keyshortcuts="Space">Přehrát</button>
+            <button id="first-note" type="button">První nota</button>
+            <button id="loop" type="button" aria-pressed="false">Smyčka</button>
+            <div id="speed" class="view-choice" role="group" aria-label="Rychlost přehrávání">
+              <button type="button" data-speed="0.5" aria-pressed="false">50 %</button>
+              <button type="button" data-speed="0.75" aria-pressed="false">75 %</button>
+              <button type="button" data-speed="0.9" aria-pressed="false">90 %</button>
+              <button type="button" data-speed="1" aria-pressed="true">100 %</button>
+            </div>
+            <label class="inline" id="monitor-label" hidden>Poslech <select id="monitor"></select></label>
+          </div>
+          <div id="practice-presets" class="view-choice" role="group" aria-label="Tréninkový mix" hidden>
+            <button id="practice-all" type="button">Celá skladba</button>
+            <button id="practice-solo" type="button">Sólo stopy</button>
+            <button id="practice-backing" type="button">Bez této stopy</button>
+          </div>
+          <details id="mixer" hidden>
+            <summary id="mix-summary">Vlastní doprovod</summary>
+            <fieldset id="mix-tracks"></fieldset>
+            <button id="apply-mix" type="button">Použít výběr</button>
+          </details>
+        </section>
+        <section class="transcript" aria-labelledby="transcript-title">
+          <div class="section-head">
+            <div><h2 id="transcript-title">Přepis</h2><p id="sheet-info" class="muted"></p></div>
+            <div class="actions"><button id="txt" type="button">TAB .txt</button><button id="midi" type="button">MIDI</button><button id="xml" type="button">MusicXML</button></div>
+          </div>
+          <div id="result-empty"><p>Vyber typ nástroje a spusť přepis této stopy.</p><button id="choose-instrument" type="button">Nastavit přepis</button></div>
+          <div id="results" hidden>
+            <div class="result-controls">
+              <div class="view-choice" role="group" aria-label="Zobrazení">
+                <button data-view="tab" type="button" aria-pressed="true">Tabulatura</button>
+                <button data-view="roll" type="button" aria-pressed="false">Piano roll</button>
+                <button data-view="score" type="button" aria-pressed="false">Noty</button>
+              </div>
+              <div class="pager">
+                <button id="previous" type="button" aria-label="Předchozí úsek">‹</button>
+                <output id="page-label"></output>
+                <button id="next" type="button" aria-label="Další úsek">›</button>
+              </div>
+            </div>
+            <div id="keyboard" aria-label="Aktivní klávesy" hidden></div>
+            <div id="graph" class="graph" tabindex="0" aria-label="Přepis s dobami">
+              <div id="grid"><div id="playhead" aria-hidden="true"></div></div>
+            </div>
+            <div id="score-image" role="region" aria-label="Interaktivní partitura" hidden></div>
+            <p id="score-loading" role="status" hidden>Načítám partituru…</p>
+            <p id="placement" class="muted"></p>
+            <details id="edit">
+              <summary>Upravit noty v úseku</summary>
+              <div id="note-table" class="table-scroll"></div>
+              <button id="add-note" type="button">Přidat notu</button>
+            </details>
+          </div>
+        </section>
+      </div>
+      <aside class="settings" aria-label="Nastavení přepisu">
+        <details id="instrument-settings" open>
+          <summary>Nástroj a ladění</summary>
+          <form id="settings-form">
+            <label>Typ
+              <select id="instrument"><option value="bass">Basa</option><option value="guitar">Kytara / pražcový nástroj</option><option value="piano">Klavír</option><option value="drums">Bicí</option><option value="violin">Housle</option><option value="melody">Jiný melodický nástroj</option></select>
+            </label>
+            <div id="strings-form">
+              <label>Předvolba ladění
+                <select id="preset"><option value="custom">Vlastní</option><option value="bass">Basa E standard</option><option value="drop-f">Basa Drop F</option><option value="guitar">Kytara E standard</option><option value="drop-d">Kytara Drop D</option><option value="seven">Sedmistrunná kytara</option></select>
+              </label>
+              <label for="tuning">Otevřené struny od nejhlubší</label>
+              <input id="tuning" value="E2 A2 D3 G3 B3 E4" spellcheck="false" aria-describedby="tuning-hint">
+              <small id="tuning-hint">Jedna nota na strunu, např. F0 C1 F1 Bb1.</small>
+              <label>Počet pražců <input id="frets" type="number" min="1" max="48" step="1" value="24"></label>
+              <button type="submit">Použít ladění</button>
+            </div>
+            <button id="transcribe" class="primary" type="button">Přepsat stopu</button>
+          </form>
+        </details>
+        <details>
+          <summary>Rytmus</summary>
+          <p id="timing" class="muted"></p>
+          <form id="rhythm-form">
+            <div class="fields">
+              <label>Tempo (BPM) <input id="bpm" type="number" min="20" max="350" step="0.01" required></label>
+              <label>Takt <span class="meter"><input id="numerator" aria-label="Počet dob" type="number" min="1" max="32" required><span>/</span><select id="denominator" aria-label="Délka doby"><option>1</option><option>2</option><option selected>4</option><option>8</option><option>16</option><option>32</option></select></span></label>
+            </div>
+            <label>Začátek první doby (s) <input id="phase" type="number" min="0" max="3600" step="0.001" required></label>
+            <div class="actions"><button type="submit">Použít</button><button id="reset-rhythm" type="button" class="quiet">Obnovit</button></div>
+          </form>
+        </details>
+        <details id="adjustments" hidden>
+          <summary>Zarovnání not</summary>
+          <form id="adjust-form">
+            <label>Posun času (s) <input id="offset" type="number" min="-3600" max="3600" step="0.001" value="0" required></label>
+            <label>Transpozice (půltóny) <input id="transpose" type="number" min="-84" max="84" step="1" value="0" required></label>
+            <button type="submit">Použít</button>
+          </form>
+        </details>
+      </aside>
+    </div>
+  </main>
+  <footer class="credits">Notová sazba <a href="https://www.verovio.org/" target="_blank" rel="noopener noreferrer">Verovio</a></footer>
+</body>
+</html>
