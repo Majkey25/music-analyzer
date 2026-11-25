@@ -28,9 +28,9 @@
     </form>
   </dialog>
   <main>
-    <section id="empty" class="intro">
-        <h2>Otevřít skladbu nebo relaci</h2>
-        <p>WAV, MP3, FLAC, MIDI nebo vlastní soubor relace.</p>
+    <section id="empty" class="intro" aria-labelledby="open-heading">
+        <h2 id="open-heading">Otevřít skladbu nebo relaci</h2>
+        <p>Přetáhni sem WAV, MP3, FLAC, MIDI nebo uloženou relaci.</p>
         <div class="actions">
         <button id="empty-open" class="primary" type="button">Vybrat nahrávku nebo MIDI</button>
         <button id="demo" type="button">Studiová ukázka</button>
@@ -103,12 +103,13 @@
                 <button id="next" type="button" aria-label="Další úsek">›</button>
               </div>
             </div>
-            <div id="keyboard" aria-label="Aktivní klávesy" hidden></div>
             <div id="graph" class="graph" tabindex="0" aria-label="Přepis s dobami">
               <div id="grid"><div id="playhead" aria-hidden="true"></div></div>
             </div>
-            <div id="score-image" role="region" aria-label="Interaktivní partitura" hidden></div>
-            <p id="score-loading" role="status" hidden>Načítám partituru…</p>
+            <div id="score-stage" hidden>
+              <div id="score-image" role="region" aria-label="Interaktivní partitura" hidden></div>
+              <p id="score-loading" role="status" hidden>Načítám partituru…</p>
+            </div>
             <p id="placement" class="muted"></p>
             <details id="edit">
               <summary>Upravit noty v úseku</summary>

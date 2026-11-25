@@ -7,7 +7,6 @@
   --border: light-dark(#78818b, #626973);
   --accent: light-dark(#174c92, #b5d1ff);
   --error: light-dark(#a22015, #ffb2a9);
-  --key-dark: light-dark(#313642, #15171b);
   --paper: #fff;
   --score-color: #15202b;
   --score-active: #1b5fae;
@@ -22,7 +21,7 @@
 }
 
 *, *::before, *::after { box-sizing: border-box; }
-body { margin: 0; }
+body { margin: 0; display: flex; flex-direction: column; min-block-size: 100svh; }
 [hidden] { display: none !important; }
 h1, h2, p { margin: 0; }
 h2 { font-size: 1.12rem; line-height: 1.3; }
@@ -38,9 +37,15 @@ button, input:not([type="range"]), select {
 button { padding: .35rem .8rem; cursor: pointer; }
 button:hover:not(:disabled) { border-color: var(--accent); }
 button:disabled { opacity: .54; cursor: default; }
-button.primary, button[aria-pressed="true"] {
+button.primary {
   color: var(--base);
   background: var(--accent);
+  border-color: var(--accent);
+  font-weight: 650;
+}
+button[aria-pressed="true"]:not(.primary) {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, var(--base));
   border-color: var(--accent);
   font-weight: 650;
 }
@@ -64,8 +69,12 @@ a { color: var(--accent); }
 .brand { gap: .85rem; }
 .brand h1 { font-size: clamp(1rem, 2vw, 1.4rem); font-weight: 700; letter-spacing: -.02em; }
 .actions { flex-wrap: wrap; }
-main { max-inline-size: 111rem; margin: auto; padding: 0 clamp(1rem, 3vw, 3rem) 3rem; }
-.intro { margin-block: clamp(2rem, 5vw, 5rem); }
+main { max-inline-size: 111rem; inline-size: 100%; margin-inline: auto; padding: 0 clamp(1rem, 3vw, 3rem) 3rem; }
+.intro {
+  margin: clamp(2rem, 5vw, 5rem) auto; padding: clamp(1rem, 3vw, 2rem);
+  max-inline-size: 43rem; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.intro.drop-active { border-color: var(--accent); outline: 2px solid var(--accent); }
 .intro h2 { font-size: 1.6rem; letter-spacing: -.026em; }
 .intro p { margin-block: .5rem 1.15rem; color: var(--muted); }
 canvas { color: var(--accent); background-color: var(--surface); border-color: var(--border); }
@@ -100,7 +109,7 @@ canvas { color: var(--accent); background-color: var(--surface); border-color: v
   display: grid; gap: .15rem; padding: .35rem .7rem;
 }
 .track-item small { font-size: .75rem; }
-.track-item[aria-pressed="true"] small { color: var(--base); }
+.track-item[aria-pressed="true"] small { color: var(--accent); }
 .stem-link { display: inline-block; font-size: .78rem; margin: .2rem .7rem; }
 .session { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.1rem; min-inline-size: 0; }
 .transport, .transcript, .settings details {
@@ -154,6 +163,7 @@ dialog .actions { justify-content: end; margin-block-start: .65rem; }
 .pager output { min-inline-size: 5ch; text-align: center; font: .78rem var(--number); }
 .pager button { min-inline-size: 2.5rem; font-size: 1.3rem; }
 .graph { overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); max-block-size: 34rem; }
+.graph:has(#grid.piano) { max-block-size: calc(28 * 1.25rem + 2.15rem + 2px); }
 #grid {
   position: relative; min-inline-size: 31rem; background: var(--base);
   --label-width: 4.35rem; --ruler-height: 2.15rem; --row-height: 2rem;
@@ -170,12 +180,15 @@ dialog .actions { justify-content: end; margin-block-start: .65rem; }
   font: .78rem var(--number);
 }
 #grid.drums { --label-width: 7rem; }
+#grid.piano { --row-height: 1.25rem; }
+.grid-label.piano-key { color: #15202b; background: light-dark(#f6f7f9, #d2d9e3); }
+.grid-label.piano-key.dark { color: #fff; background: #303846; }
+.grid-label.piano-key.playing { color: #fff; background: #174c92; }
 .grid-ruler { height: var(--ruler-height); background: var(--surface); position: sticky; top: 0; z-index: 2; }
 .grid-body { position: absolute; inset: var(--ruler-height) 0 0 var(--label-width); pointer-events: none; }
 .beat {
   position: absolute; inset-block: 0; inline-size: 1px; background: var(--border);
 }
-.beat strong { display: none; }
 .ruler-beat {
   position: absolute; inset-block: 0; padding: .45rem .25rem; border-inline-start: 1px solid var(--border);
   font: .72rem var(--number); color: var(--muted); overflow: clip; white-space: nowrap;
@@ -188,13 +201,16 @@ button.note {
   font: .75rem var(--number); text-align: start; white-space: nowrap; z-index: 1;
   background: var(--surface); color: var(--ink); pointer-events: auto;
 }
+button.note { background: light-dark(#dce8f9, #344a68); border-color: light-dark(#4d6994, #8eadd3); }
 button.note.playing { border-color: var(--accent); background: var(--accent); color: var(--base); }
 #playhead { position: absolute; z-index: 2; inline-size: 2px; background: var(--accent); inset-block: 0; pointer-events: none; }
 #score-image {
   display: block; width: 100%; min-height: 5rem; background: var(--paper);
-  color: var(--score-color); border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--score-color);
 }
-#score-loading { min-block-size: 5rem; padding: 1rem; color: var(--muted); }
+#score-stage { position: relative; border: 1px solid var(--border); border-radius: var(--radius); overflow: clip; }
+#score-stage[aria-busy="true"] { min-block-size: var(--reserved-height, 14rem); }
+#score-loading { padding: 1rem; color: var(--muted); }
 #score-image > svg { display: block; width: 100%; height: auto; }
 #score-image :is(ellipse, path, polygon, polyline, rect) { stroke: currentColor; }
 #score-image .placeholder, #score-image g.tempo, #score-image g.label { visibility: hidden; }
@@ -202,21 +218,15 @@ button.note.playing { border-color: var(--accent); background: var(--accent); co
 #score-image g.note.playing { fill: var(--score-active); color: var(--score-active); }
 #score-image g.measure.is-current > g.staff > path { stroke: var(--score-active); }
 #score-image g.measure:focus-visible { outline: 2px solid var(--score-active); outline-offset: -2px; }
+#score-image .measure-hit { fill: transparent; stroke: none; pointer-events: all; }
 #placement { font-size: .86rem; margin-block: .55rem; }
-#keyboard { display: flex; overflow: auto; margin-block: .3rem .7rem; }
-.key {
-  flex: 1 0 1.6rem; min-height: 3.6rem; display: grid; align-items: end; padding: .2rem;
-  border: 1px solid var(--border); background: #f7f8fa; color: #17202b; font: .68rem var(--number);
-}
-.key.dark { background: var(--key-dark); color: #fff; }
-.key.playing { background: var(--accent); color: var(--base); box-shadow: inset 0 -4px var(--base); }
 details { border-block-start: 1px solid var(--border); margin-block-start: .5rem; padding-block-start: .65rem; }
 summary { cursor: pointer; }
 .table-scroll { overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; margin-block: .5rem; }
 th, td { padding: .35rem .3rem; border-block-end: 1px solid var(--border); text-align: start; vertical-align: middle; }
 td input { width: 6rem; }
-.credits { max-inline-size: 111rem; margin: auto; padding: 1rem clamp(.75rem, 3vw, 3rem); color: var(--muted); font-size: .82rem; }
+.credits { max-inline-size: 111rem; inline-size: 100%; margin: auto auto 0; padding: 1rem clamp(.75rem, 3vw, 3rem); color: var(--muted); font-size: .82rem; }
 #result-empty { display: grid; justify-items: start; gap: .5rem; padding-block: 1.1rem .3rem; color: var(--muted); }
 @media (max-width: 68rem) {
   .studio { grid-template-columns: minmax(0, 1fr) minmax(12rem, 15rem); }
@@ -227,6 +237,7 @@ td input { width: 6rem; }
   .studio { grid-template-columns: minmax(0, 1fr); }
   .settings { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
   .graph { max-block-size: 23rem; }
+  .graph:has(#grid.piano) { max-block-size: calc(16 * 1.25rem + 2.15rem + 2px); }
   #wave { height: 3.2rem; }
   main { padding-inline: .75rem; }
   .transport, .transcript { padding-inline: 0; }
@@ -235,8 +246,8 @@ td input { width: 6rem; }
 @media print {
   :root { color-scheme: light; }
   .mast, .tracks, .settings, .transport, .player-toolbar, .activity, .result-controls, .transcript .actions,
-  #placement, #edit, #keyboard, .credits { display: none; }
+  #placement, #edit, .credits { display: none; }
   main, .transcript { padding: 0; }
   .studio { display: block; }
-  #score-image { border: 0; }
+  #score-stage { border: 0; }
 }

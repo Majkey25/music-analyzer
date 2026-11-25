@@ -36,22 +36,31 @@ export function mountScore(host, score, notes, phase, seek) {
   }
   const measures = [];
   const times = [...new Set(Object.values(score.measures))].sort((a, b) => a - b);
+  const lastNote = notes.reduce((last, note) => Math.max(last, note.end), 0);
   for (const group of svg.querySelectorAll("g.measure[id]")) {
     const time = score.measures[group.id];
     if (time === undefined) continue;
     const start = phase + time / 1000;
     const index = times.indexOf(time);
     const end = times[index + 1] !== undefined ? phase + times[index + 1] / 1000
-      : Math.max(start + .1, ...notes.map(note => note.end));
+      : Math.max(start + .1, lastNote);
     group.setAttribute("tabindex", "0");
     group.setAttribute("role", "button");
     group.setAttribute("aria-label", `Přejít na takt ${index + 1}`);
+    const box = group.getBBox();
+    const hit = document.createElementNS(svg.namespaceURI, "rect");
+    for (const [key, value] of Object.entries({ x: box.x, y: box.y, width: box.width, height: box.height })) {
+      hit.setAttribute(key, String(value));
+    }
+    hit.setAttribute("class", "measure-hit");
+    hit.setAttribute("aria-hidden", "true");
+    group.prepend(hit);
     group.addEventListener("keydown", event => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       seek(start);
     });
-    measures.push({ group, start, end });
+    measures.push({ group, start, end, number: index + 1 });
   }
   svg.addEventListener("click", event => {
     const glyph = event.target.closest("g.note[id]");

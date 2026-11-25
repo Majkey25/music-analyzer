@@ -36,10 +36,17 @@ Projekt má zamčené závislosti pro Windows x64, Linux x64 a macOS Apple Silic
 ## Trénink a uložení
 
 1. Vyber part, který chceš číst. **Celá skladba** přehraje mix. **Sólo stopy** přehraje vybraný part. **Bez této stopy** složí doprovod ze zbývajících oddělených stop.
-2. V nabídce **Vlastní doprovod** můžeš zvolit přesnou kombinaci stop. Přepínače rychlosti zpomalí poslech. **Smyčka** opakuje zobrazenou stranu nebo úsek v mřížce.
+2. V nabídce **Vlastní doprovod** si vyber přesnou kombinaci stop. Poslech můžeš zpomalit nebo spustit mezerníkem. **Smyčka** opakuje aktuální takt. Kliknutím na jiný takt přesuneš smyčku.
 3. **Uložit relaci** stáhne soubor `.music-analyzer.zip` se zvukem, zvolenou stopou, úpravami not, laděním, rytmickou mřížkou a nastavením poslechu. Otevři jej přímo přes **Otevřít soubor**. Soubor si ponech celý, aby zůstal přehratelný i na jiném počítači.
 
 ![Dvojitá klavírní osnova a volba poslechu](docs/screenshots/piano.png)
+
+<details>
+<summary>Mobilní zobrazení</summary>
+
+![Klavírní osnova a ovládání poslechu v mobilním prohlížeči](docs/screenshots/mobile.png)
+
+</details>
 
 ## Přesnost a soukromí
 

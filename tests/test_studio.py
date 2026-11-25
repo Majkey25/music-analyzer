@@ -1,14 +1,18 @@
 import math
+import re
 import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from threading import Event, Thread
+from unittest.mock import patch
 from xml.etree import ElementTree as ET
 
 import mido
 import numpy as np
 import soundfile as sf
 
+from studio import audio as audio_engine
 from studio.archive import write_archive
 from studio.audio import drums
 from studio.musical import fingering, read_midi
@@ -188,10 +192,23 @@ class HttpTests(unittest.TestCase):
         reopened = self.client.get(f"/api/projects/{restored['id']}/tracks/{bass}").get_json()
         self.assertEqual(reopened["notes"][0]["pitch"], 29)
         self.assertEqual(reopened["setup"]["preferred"], [1])
+        restored_base = f"/api/projects/{restored['id']}"
+        altered["edits"] = {bass: {"mode": "piano", "notes": [note(60, .02, .1), note(64, .02, .1)]}}
+        self.wait_for(self.client.post(restored_base + "/save", json=altered))
+        download = self.client.get(restored_base + "/download")
+        changed_content = download.data
+        download.close()
+        changed_state = self.wait_for(self.client.post("/api/restore", data={
+            "project": (BytesIO(changed_content), "changed.music-analyzer.zip"),
+        }))
+        changed_track = self.client.get(f"/api/projects/{changed_state['id']}/tracks/{bass}").get_json()
+        self.assertIsNone(changed_track["setup"])
+        self.assertEqual(changed_track["mode"], "piano")
+        self.assertEqual(len(changed_track["notes"]), 2)
 
     def test_score_engravings_keep_frets_and_seekable_notes(self):
         changed = {
-            "mode": "bass", "notes": [note(17, 0, .25), note(29, .5, .75)],
+            "mode": "bass", "notes": [note(17, 0, .25), note(29, .25, .5)],
             "tempo": [{"time": 0, "bpm": 120}],
             "meter": [{"time": 0, "numerator": 4, "denominator": 4}],
             "tuning": [17, 24, 29, 34],
@@ -203,10 +220,49 @@ class HttpTests(unittest.TestCase):
         graph = ET.fromstring(score["svg"])
         self.assertTrue(any(node.get("id") == "n0-0" for node in graph.iter()))
         self.assertIn(0, score["measures"].values())
+        svg = {"s": "http://www.w3.org/2000/svg"}
+        matched = []
+        for group in graph.findall(".//s:g[@class='tabGrp']", svg):
+            digit = group.find("s:g[@class='note']/s:text", svg)
+            stem = group.find(".//s:g[@class='stem']/s:path", svg)
+            if digit is not None and stem is not None:
+                start = re.match(r"M(-?\d+)", stem.attrib["d"])
+                assert start is not None
+                matched.append(abs(int(digit.attrib["x"]) - int(start[1])))
+        self.assertEqual(len(matched), 2)
+        self.assertLess(max(matched), 21)
         xml = self.client.post("/api/export/musicxml", json=changed)
         self.assertEqual(ET.fromstring(xml.data).findtext(".//staff-lines"), "4")
         self.assertEqual([item.text for item in ET.fromstring(xml.data).findall(".//technical/fret")],
                          ["0", "5"])
+
+    def test_mixing_leaves_other_routes_responsive_and_prevents_close(self):
+        project = self.client.post("/api/demo").get_json()
+        base = f"/api/projects/{project['id']}"
+        stem = next(track for track in project["tracks"] if track["mode"] == "bass")
+        started, release = Event(), Event()
+        mixed = audio_engine.mix_tracks
+        statuses = []
+
+        def deferred(paths: list[Path], dest: Path) -> audio_engine.Wave:
+            started.set()
+            assert release.wait(3)
+            return mixed(paths, dest)
+
+        with patch.object(audio_engine, "mix_tracks", deferred):
+            worker = Thread(target=lambda: statuses.append(self.app.test_client().post(
+                base + "/practice", json={"tracks": [stem["id"]]},
+            ).status_code))
+            worker.start()
+            try:
+                self.assertTrue(started.wait(3))
+                self.assertEqual(self.client.get(base).status_code, 200)
+                self.assertEqual(self.client.delete(base).status_code, 409)
+                self.assertFalse(release.is_set())
+            finally:
+                release.set()
+                worker.join()
+        self.assertEqual(statuses, [200])
 
 
 if __name__ == "__main__":

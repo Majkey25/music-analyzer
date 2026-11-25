@@ -16,10 +16,13 @@ const trackURL = trackId => `/api/projects/${project.id}/tracks/${trackId}`;
 
 let project, track, rhythm, monitor, audioWave;
 let playbackMode = "", mixSelection = null;
+let downloadRequested = false;
+let changedSession = false;
 let notes = [], tuning = [], positions = [], pages = [], marks = [];
 let view = "tab", page = 0, scorePage = 1, scoreCount = 1;
 let scoreRequest, refreshID = 0, selectID = 0, monitorID = 0, busy = false;
 let sheetMeasures = [];
+let lastSheetHeight = 0;
 const isSheet = () => view !== "roll";
 const drafts = new Map();
 
@@ -134,8 +137,10 @@ function setInstrument(value, preset) {
 }
 
 function allowReplacement() {
-  return ![...drafts.values()].some(value => value.edited)
-    || window.confirm("Zavřít relaci s neuloženými úpravami?");
+  return !(changedSession || [...drafts.values()].some(value => value.edited))
+    || window.confirm(downloadRequested
+      ? "Stáhl se soubor relace? Po zavření zůstane jen stažená kopie."
+      : "Zavřít relaci s neuloženými úpravami?");
 }
 
 async function closeProject(checkEdits = true) {
@@ -158,10 +163,13 @@ async function closeProject(checkEdits = true) {
   scoreRequest?.abort();
   $("score-image").replaceChildren();
   sheetMeasures = [];
+  lastSheetHeight = 0;
   project = track = rhythm = monitor = audioWave = null;
   playbackMode = "";
   mixSelection = null;
   drafts.clear();
+  downloadRequested = false;
+  changedSession = false;
   notes = positions = pages = marks = [];
   transport.loop = null;
   transport.setSource(null, 0);
@@ -195,6 +203,7 @@ async function loadProject(snapshot) {
       if (saved.view !== "tab" || strings()) view = saved.view;
       transport.seek(saved.position);
       page = pageFor(transport.position);
+      $("loop").setAttribute("aria-pressed", String(saved.loop));
       await render(true);
     }
   } catch (error) {
@@ -337,7 +346,12 @@ function updatePracticeButtons() {
 
 async function changeMonitor(id) {
   const wasPlaying = transport.playing;
+  const prepare = id === "@backing" || id === "@custom";
   $("monitor").value = id;
+  if (prepare) {
+    busyStatus(true, "Připravuji doprovod.");
+    showTrackList();
+  }
   try {
     if (await setMonitor(id, true)) {
       await refresh();
@@ -346,6 +360,11 @@ async function changeMonitor(id) {
   } catch (error) {
     $("monitor").value = playbackMode;
     throw error;
+  } finally {
+    if (prepare) {
+      busyStatus(false);
+      showTrackList();
+    }
   }
 }
 
@@ -378,6 +397,8 @@ function saveDraft() {
     transpose: Number($("transpose").value),
   };
   drafts.set(track.id, draft);
+  changedSession = true;
+  downloadRequested = false;
   return draft;
 }
 
@@ -432,6 +453,7 @@ function visibleLanes(segmentNotes) {
 function graph(segment, items, lanes) {
   const root = $("grid");
   root.classList.toggle("drums", mode() === "drums");
+  root.classList.toggle("piano", mode() === "piano");
   const ruler = element("div", "", "grid-ruler");
   const rulerLabel = element("span", "Doby", "grid-label");
   ruler.append(rulerLabel);
@@ -444,7 +466,13 @@ function graph(segment, items, lanes) {
   marks = [];
   lanes.forEach(lane => {
     const row = element("div", "", "grid-lane");
-    row.append(element("span", lane.label, "grid-label"));
+    const label = element("span", lane.label, "grid-label");
+    if (mode() === "piano") {
+      label.classList.add("piano-key");
+      label.classList.toggle("dark", [1, 3, 6, 8, 10].includes(lane.id % 12));
+      label.dataset.pitch = lane.id;
+    }
+    row.append(label);
     root.append(row);
   });
   root.append(body);
@@ -480,17 +508,6 @@ function graph(segment, items, lanes) {
     button.addEventListener("click", () => transport.seek(note.start));
     body.append(button);
     marks.push({ note, button });
-  }
-  $("keyboard").replaceChildren();
-  $("keyboard").hidden = mode() !== "piano";
-  if (mode() === "piano") {
-    const pitches = [...laneIndex.keys()].sort((a, b) => a - b);
-    for (const pitch of pitches) {
-      const key = element("span", pitchName(pitch), "key");
-      key.classList.toggle("dark", [1, 3, 6, 8, 10].includes(pitch % 12));
-      key.dataset.pitch = pitch;
-      $("keyboard").append(key);
-    }
   }
 }
 
@@ -528,6 +545,7 @@ function editTable(items) {
         const draft = saveDraft(), raw = draft.raw[rawIndex(draft, note)];
         raw[field] = value - (field === "pitch" ? draft.transpose : draft.offset);
         draft.edited = true;
+        downloadRequested = false;
         await refresh();
       }));
       cell.append(input);
@@ -553,6 +571,7 @@ function editTable(items) {
         if (choice.value === "") delete raw.string;
         else raw.string = Number(choice.value);
         draft.edited = true;
+        downloadRequested = false;
         await refresh();
       }));
       cell.append(choice);
@@ -566,6 +585,7 @@ function editTable(items) {
       const index = rawIndex(draft, note);
       draft.raw.splice(index, 1);
       draft.edited = true;
+      downloadRequested = false;
       await refresh();
     }));
     cell.append(remove);
@@ -601,8 +621,13 @@ async function drawScore(atCursor) {
   scoreRequest?.abort();
   const controller = new AbortController();
   scoreRequest = controller;
-  $("score-image").replaceChildren();
-  $("score-image").hidden = true;
+  const stage = $("score-stage"), image = $("score-image");
+  stage.hidden = false;
+  if (lastSheetHeight) stage.style.setProperty("--reserved-height", `${lastSheetHeight}px`);
+  else stage.style.removeProperty("--reserved-height");
+  stage.setAttribute("aria-busy", "true");
+  image.replaceChildren();
+  image.hidden = true;
   $("score-loading").hidden = false;
   try {
     const activeView = view;
@@ -613,12 +638,14 @@ async function drawScore(atCursor) {
     if (controller.signal.aborted || view !== activeView) return;
     scoreCount = score.pages;
     scorePage = score.page;
-    const drawn = mountScore($("score-image"), score, original, rhythm.phase, time => {
+    image.hidden = false;
+    const drawn = mountScore(image, score, original, rhythm.phase, time => {
       transport.seek(time);
       page = pageFor(time);
+      syncLoop(true);
       editTable(localNotes(pages[page]));
     });
-    $("score-image").hidden = false;
+    lastSheetHeight = image.offsetHeight;
     marks = drawn.markers;
     sheetMeasures = drawn.measures;
     if (sheetMeasures.length) {
@@ -631,23 +658,40 @@ async function drawScore(atCursor) {
   } catch (error) {
     if (error.name !== "AbortError") throw error;
   } finally {
-    if (scoreRequest === controller) $("score-loading").hidden = true;
+    if (scoreRequest === controller) {
+      $("score-loading").hidden = true;
+      stage.setAttribute("aria-busy", "false");
+    }
   }
 }
 
 function pager() {
   const current = pages[page];
-  $("page-label").textContent = isSheet() ? `${scorePage} / ${scoreCount}`
+  const label = $("page-label");
+  label.textContent = isSheet() ? (sheetMeasures.length
+    ? `Takt ${sheetMeasures[0].number}–${sheetMeasures.at(-1).number}` : `${scorePage} / ${scoreCount}`)
     : current?.first ? `Takt ${current.first}–${current.last}` : "Před první dobou";
+  label.title = isSheet() ? `Strana ${scorePage} z ${scoreCount}` : "";
   $("previous").disabled = isSheet() ? scorePage <= 1 : page <= 0;
   $("next").disabled = isSheet() ? scorePage >= scoreCount : page >= pages.length - 1;
 }
 
-function syncLoop() {
+function syncLoop(reselect = false) {
   if ($("loop").getAttribute("aria-pressed") !== "true") transport.loop = null;
-  else if (!isSheet()) transport.loop = pages[page];
-  else transport.loop = sheetMeasures.length
-    ? { start: sheetMeasures[0].start, end: Math.min(transport.duration, sheetMeasures.at(-1).end) } : null;
+  else if (!transport.loop || reselect) {
+    const now = transport.position;
+    let range;
+    if (isSheet()) {
+      range = sheetMeasures.find(({ start, end }) => now >= start && now < end) ?? sheetMeasures[0];
+    } else {
+      const segment = pages[page];
+      const bars = segment?.ticks.filter(tick => tick.beat === 1) ?? [];
+      const index = bars.findLastIndex(tick => tick.time <= now);
+      range = segment ? { start: bars[index]?.time ?? segment.start, end: bars[index + 1]?.time ?? segment.end } : null;
+    }
+    const end = Math.min(transport.duration, range?.end ?? 0);
+    transport.loop = range && end > range.start ? { start: range.start, end } : null;
+  }
 }
 
 async function render(atCursor = false) {
@@ -662,8 +706,8 @@ async function render(atCursor = false) {
     scoreRequest?.abort();
     $("score-loading").hidden = true;
     $("score-image").hidden = true;
+    $("score-stage").hidden = true;
   }
-  $("keyboard").hidden = true;
   $("loop").disabled = false;
   const unplaced = positions.filter(position => position === null).length;
   $("placement").textContent = view === "tab" ? unplaced
@@ -699,10 +743,10 @@ function positionChanged(position, playing) {
       group.classList.toggle("is-current", position >= start && position < end);
     }
   }
-  if (!$("keyboard").hidden) {
+  if (!isSheet() && mode() === "piano") {
     const active = new Set(marks.filter(({ note }) => note.start <= position && note.end > position)
       .map(({ note }) => note.pitch));
-    for (const key of $("keyboard").children) key.classList.toggle("playing", active.has(Number(key.dataset.pitch)));
+    for (const key of $("grid").querySelectorAll(".piano-key")) key.classList.toggle("playing", active.has(Number(key.dataset.pitch)));
   }
 }
 
@@ -714,6 +758,8 @@ async function changePage(direction) {
     $("graph").scrollLeft = 0;
   }
   await render();
+  if (isSheet() && sheetMeasures.length) transport.seek(sheetMeasures[0].start);
+  syncLoop(true);
 }
 
 function download(blob, filename) {
@@ -759,8 +805,12 @@ $("open").onclick = $("empty-open").onclick = importDialog;
 $("cancel-import").onclick = () => $("import-dialog").close();
 $("import-form").onsubmit = guarded(async event => {
   event.preventDefault();
-  const form = new FormData(event.currentTarget);
-  const files = [...$("files").files];
+  await openFiles([...$("files").files]);
+});
+async function openFiles(files) {
+  if (busy || !files.length) return;
+  const form = new FormData();
+  for (const file of files) form.append("files", file);
   const archive = files.find(file => file.name.toLowerCase().endsWith(".zip"));
   if (archive && files.length > 1) {
     $("import-dialog").close();
@@ -770,14 +820,28 @@ $("import-form").onsubmit = guarded(async event => {
   if (archive) restore.append("project", archive);
   if (!allowReplacement()) return;
   $("import-dialog").close();
+  $("import-form").reset();
   busyStatus(true, "Načítám soubor.");
   try {
     await loadProject(await json(archive ? "/api/restore" : "/api/projects", {
       method: "POST", body: archive ? restore : form,
     }));
-    $("import-form").reset();
   } finally { busyStatus(false); }
+}
+const dropZone = $("empty");
+dropZone.addEventListener("dragover", event => {
+  if (!event.dataTransfer.types.includes("Files")) return;
+  event.preventDefault();
+  dropZone.classList.add("drop-active");
 });
+dropZone.addEventListener("dragleave", event => {
+  if (!dropZone.contains(event.relatedTarget)) dropZone.classList.remove("drop-active");
+});
+dropZone.addEventListener("drop", guarded(async event => {
+  event.preventDefault();
+  dropZone.classList.remove("drop-active");
+  await openFiles([...event.dataTransfer.files]);
+}));
 $("demo").onclick = guarded(async () => {
   if (!allowReplacement()) return;
   await loadProject(await json("/api/demo", { method: "POST" }));
@@ -796,6 +860,7 @@ $("save-project").onclick = guarded(async () => {
   }
   const id = project.id;
   const practice = { monitor: playbackMode, mix: mixSelection ?? [], view,
+    loop: $("loop").getAttribute("aria-pressed") === "true",
     speed: transport.speed, position: transport.position };
   const data = { ...rhythm, active: track.id, edits, practice };
   busyStatus(true, "Připravuji uložení relace.");
@@ -807,7 +872,7 @@ $("save-project").onclick = guarded(async () => {
     document.body.append(link);
     link.click();
     link.remove();
-    for (const draft of drafts.values()) draft.edited = false;
+    downloadRequested = true;
   } finally { busyStatus(false); }
 });
 
@@ -816,6 +881,8 @@ $("separate").onclick = guarded(async () => {
   showTrackList();
   try {
     project = await waitForWork(await json(`/api/projects/${project.id}/separate`, { method: "POST" }));
+    changedSession = true;
+    downloadRequested = false;
     const bass = project.tracks.find(item => item.mode === "bass" && item.audio);
     if (bass) await select(bass.id, true);
   } finally { busyStatus(false); showTrackList(); }
@@ -843,8 +910,11 @@ $("transcribe").onclick = guarded(async () => {
 
 $("instrument").onchange = guarded(async () => {
   if (strings()) {
-    $("preset").value = mode();
-    $("tuning").value = presets[mode()];
+    const before = drafts.get(track.id)?.mode ?? track.mode;
+    if (!["bass", "guitar"].includes(before) || $("preset").value !== "custom") {
+      $("preset").value = mode();
+      $("tuning").value = presets[mode()];
+    }
     view = "tab";
   } else view = "score";
   saveDraft();
@@ -869,9 +939,14 @@ $("adjust-form").onsubmit = guarded(async event => {
 });
 $("rhythm-form").onsubmit = guarded(async event => {
   event.preventDefault();
-  rhythm = { tempo: [{ time: 0, bpm: Number($("bpm").value) }],
-    meter: [{ time: 0, numerator: Number($("numerator").value), denominator: Number($("denominator").value) }],
+  const original = rhythm.tempo[0].bpm, entered = Number($("bpm").value);
+  const bpm = entered === Number(original.toFixed(2)) ? original : entered;
+  rhythm = { tempo: [{ time: 0, bpm }, ...rhythm.tempo.slice(1)],
+    meter: [{ time: 0, numerator: Number($("numerator").value),
+      denominator: Number($("denominator").value) }, ...rhythm.meter.slice(1)],
     phase: Number($("phase").value), timing: "Vlastní mřížka" };
+  changedSession = true;
+  downloadRequested = false;
   rhythmFields();
   await refresh();
 });
@@ -881,7 +956,11 @@ $("reset-rhythm").onclick = guarded(async () => {
   await refresh();
 });
 for (const button of document.querySelectorAll("[data-view]")) {
-  button.onclick = guarded(async () => { view = button.dataset.view; await render(true); });
+  button.onclick = guarded(async () => {
+    view = button.dataset.view;
+    if (!isSheet()) page = pageFor(transport.position);
+    await render(true);
+  });
 }
 $("monitor").onchange = guarded(async () => {
   await changeMonitor($("monitor").value);
@@ -928,7 +1007,7 @@ $("choose-instrument").onclick = () => {
 };
 $("loop").onclick = () => {
   $("loop").setAttribute("aria-pressed", String($("loop").getAttribute("aria-pressed") !== "true"));
-  syncLoop();
+  syncLoop(true);
   if (transport.loop && (transport.position < transport.loop.start || transport.position >= transport.loop.end)) {
     transport.seek(transport.loop.start);
   }
@@ -938,6 +1017,7 @@ $("add-note").onclick = guarded(async () => {
   const draft = saveDraft(), start = pages[page].start - draft.offset;
   draft.raw.push({ start, end: start + .25, pitch: (mode() === "drums" ? 36 : 60) - draft.transpose, velocity: 95 });
   draft.edited = true;
+  downloadRequested = false;
   await refresh();
 });
 $("txt").onclick = () => download(new Blob([textTab()], { type: "text/plain;charset=utf-8" }), "prepis.txt");

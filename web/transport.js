@@ -16,6 +16,7 @@ export class Transport {
     this.timer = 0;
     this.baseTime = 0;
     this.basePosition = 0;
+    this.generation = 0;
     audio.addEventListener("loadedmetadata", () => { audio.currentTime = this.position; });
     audio.addEventListener("ended", () => {
       if (this.loop) {
@@ -62,6 +63,7 @@ export class Transport {
   async play() {
     if (this.playing || !this.duration) return;
     this.playing = true;
+    const generation = ++this.generation;
     try {
       this.seek(this.position >= this.duration ? 0 : this.position);
       if (this.source) {
@@ -75,19 +77,21 @@ export class Transport {
         }
         await this.context.resume();
         this.baseTime = this.context.currentTime;
-        if (this.playing) {
+        if (this.playing && generation === this.generation) {
           this.runSynth();
           this.timer = setInterval(() => this.runSynth(), 100);
         }
       }
-      if (this.playing) this.tick();
+      if (this.playing && generation === this.generation) this.tick();
     } catch (error) {
-      this.reportFailure(error);
+      if (generation !== this.generation || !this.playing) return;
+      this.reportFailure(new Error("Poslech se nepodařilo spustit. Zkus přehrát znovu."));
     }
   }
 
   pause() {
     this.playing = false;
+    this.generation++;
     this.audio.pause();
     cancelAnimationFrame(this.frame);
     clearInterval(this.timer);

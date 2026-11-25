@@ -43,6 +43,7 @@ class PracticeSettings(TypedDict):
     speed: float
     position: float
     view: str
+    loop: bool
 
 
 @dataclass
@@ -83,6 +84,7 @@ class Project:
     archive: Path | None = None
     settings: PracticeSettings | None = None
     practice: dict[str, tuple[Path, audio.Wave]] = field(default_factory=dict)
+    mixing: bool = False
 
 
 def number(value: object, low: float, high: float, label: str) -> float:
@@ -166,7 +168,7 @@ def practice_settings(value: object, ids: set[str], stems: set[str]) -> Practice
     speed = number(value.get("speed"), .5, 1, "Rychlost")
     if speed not in {.5, .75, .9, 1}:
         raise ValueError("Uložená rychlost není podporovaná.")
-    return {"monitor": monitor, "view": view, "mix": mix, "speed": speed,
+    return {"monitor": monitor, "view": view, "mix": mix, "speed": speed, "loop": value.get("loop") is True,
             "position": number(value.get("position"), 0, 3600, "Pozice přehrávání")}
 
 
@@ -188,7 +190,10 @@ def project_bytes(project: Project, data: dict[str, object]) -> tuple[dict[str, 
             raise BadRequest("Neplatné úpravy stopy.")
         mode = instrument(changed.get("mode", track.mode))
         notes = parse_notes(changed["notes"]) if "notes" in changed else track.notes
-        setup = parse_setup(changed["setup"], len(notes or [])) if "setup" in changed else track.setup
+        if "setup" in changed:
+            setup = parse_setup(changed["setup"], len(notes or []))
+        else:
+            setup = None if "notes" in changed else track.setup
         tracks.append({
             "id": track.id, "title": track.title, "mode": mode, "method": track.method,
             "notes": notes, "setup": setup,
@@ -235,12 +240,13 @@ def hydrate(project: Project, manifest: dict[str, object], media: dict[str, Path
     active = identity(manifest.get("active"))
     if not media.keys() <= seen or (source is not None and source not in media) or active not in seen:
         raise ValueError("V uložené relaci chybí odkazovaná stopa.")
+    settings = practice_settings(manifest.get("practice"), set(media), set(media) - {source})
     project.title, project.tracks = title, tracks
     project.tempo, project.meter, project.phase = tempo, meter, phase
     project.timing = "Uložená mřížka"
     project.source, project.active_track = source, active
     project.separated = manifest.get("separated") is True
-    project.settings = practice_settings(manifest.get("practice"), set(media), set(media) - {source})
+    project.settings = settings
 
 
 def parse_notes(value: object) -> list[Note]:
@@ -393,12 +399,12 @@ def create_app(root: Path) -> Flask:
 
     def create_project(title: str) -> Project:
         for closed in root.glob("closed-*"):
-            shutil.rmtree(closed, ignore_errors=True)
+            executor.submit(shutil.rmtree, closed, ignore_errors=True)
         expired = [p for p in projects.values()
-                   if p.status != "busy" and monotonic() - p.last_used > IDLE_LIMIT]
+                   if p.status != "busy" and not p.mixing and monotonic() - p.last_used > IDLE_LIMIT]
         for project in expired:
             projects.pop(project.id)
-            shutil.rmtree(project.root, ignore_errors=True)
+            executor.submit(shutil.rmtree, project.root, ignore_errors=True)
         if len(projects) >= MAX_PROJECTS:
             abort(409, "Zavři jednu z ostatních relací nebo restartuj aplikaci.")
         id = uuid4().hex
@@ -409,7 +415,7 @@ def create_app(root: Path) -> Flask:
         return project
 
     def ensure_idle(project: Project) -> None:
-        if project.status == "busy":
+        if project.status == "busy" or project.mixing:
             abort(409, "Počkej na dokončení běžící úlohy.")
 
     @app.get("/")
@@ -665,16 +671,23 @@ def create_app(root: Path) -> Flask:
                 media.append(track.path)
             key = uuid4().hex
             destination = project.root / f"practice-{key}.wav"
+            project.mixing = True
+        try:
             wave = audio.mix_tracks(media, destination)
-            project.practice[key] = (destination, wave)
-            while len(project.practice) > 2:
-                old = next(iter(project.practice))
-                path, _ = project.practice.pop(old)
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    app.logger.info("Previous practice audio is still streaming.")
+            with lock:
+                project.practice[key] = (destination, wave)
+                if len(project.practice) > 2:
+                    old = next(iter(project.practice))
+                    path, _ = project.practice.pop(old)
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        app.logger.info("Previous practice audio is still streaming.")
             return jsonify(key=key, wave=wave)
+        finally:
+            with lock:
+                project.mixing = False
+                project.last_used = monotonic()
 
     @app.get("/api/projects/<id>/practice/<key>")
     def practice_audio(id: str, key: str):
@@ -705,6 +718,7 @@ def create_app(root: Path) -> Flask:
             with lock:
                 track.notes, track.mode = checked, mode
                 track.method = method
+                track.setup = None
 
         with lock:
             project = lookup(id)

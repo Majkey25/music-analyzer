@@ -48,15 +48,23 @@ def run() -> None:
                 page.get_by_role("button", name="Uložit relaci").click()
             saved = Path(root) / "reopen.music-analyzer.zip"
             file.value.save_as(saved)
+            page.on("dialog", lambda dialog: dialog.accept())
             page.locator("#open").click()
             page.locator("#files").set_input_files(saved)
             page.get_by_role("button", name="Načíst", exact=True).click()
             expect(page.locator("#placement")).to_contain_text("5 strun")
             expect(page.locator("#score-image g.note").first).to_be_visible()
+            page.locator("#open").click()
+            page.locator("#files").set_input_files({
+                "name": "broken.music-analyzer.zip", "mimeType": "application/zip", "buffer": b"invalid",
+            })
+            page.get_by_role("button", name="Načíst", exact=True).click()
+            expect(page.get_by_role("alert")).not_to_be_empty()
+            expect(page.locator("#placement")).to_contain_text("5 strun")
             page.locator("#practice-all").click()
             page.locator("#tracks").get_by_role("button", name="Klavír").click()
             page.get_by_role("button", name="Piano roll").click()
-            expect(page.locator("#keyboard")).to_be_visible()
+            expect(page.locator(".piano-key[data-pitch='67']")).to_have_class("grid-label piano-key playing")
             page.get_by_role("button", name="Noty", exact=True).click()
             expect(page.locator("#score-image g.note").first).to_be_visible()
             with page.expect_download() as xml:
