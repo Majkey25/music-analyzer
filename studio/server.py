@@ -579,6 +579,9 @@ def create_app(root: Path) -> Flask:
         data = payload()
         mode = instrument(data.get("mode"))
         reference_id = identity(data.get("reference"))
+        edited_notes = parse_notes(data["notes"]) if "notes" in data else None
+        if edited_notes == []:
+            raise ValueError("The edited MIDI reference has no notes to apply.")
         with lock:
             project = lookup(id)
             ensure_idle(project)
@@ -586,7 +589,7 @@ def create_app(root: Path) -> Flask:
             reference = track_for(project, reference_id)
             if track.path is None or reference.method != "MIDI" or reference.path or not reference.notes:
                 raise ValueError("Choose an audio track and a MIDI reference.")
-            track.notes = [note.copy() for note in reference.notes]
+            track.notes = edited_notes if edited_notes is not None else [note.copy() for note in reference.notes]
             track.mode = mode
             track.method = "MIDI reference"
             track.setup = None

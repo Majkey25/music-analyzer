@@ -329,8 +329,8 @@ td input { width: 6rem; }
   .import-steps { grid-template-columns: 1fr; gap: 1rem; margin-block-start: 1.5rem; }
   .studio { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; gap: .7rem; margin-block-start: .7rem; }
   .tracks, .settings { padding: .7rem; }
-  .tracks ul { display: flex; overflow-x: auto; scroll-snap-type: x proximity; }
-  .tracks li { flex: 0 0 auto; max-width: min(18rem, 75vw); scroll-snap-align: start; }
+  .tracks ul { display: flex; overflow-x: auto; }
+  .tracks li { flex: 0 0 auto; max-width: min(18rem, 75vw); }
   .session { grid-column: 1; grid-row: auto; }
   .graph { max-block-size: 23rem; }
   .graph:has(#grid.piano) { max-block-size: calc(16 * 1.25rem + 2.15rem + 2px); }

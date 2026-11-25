@@ -399,10 +399,15 @@ function setupMidiActions() {
       if (!$("frets").reportValidity()) return;
     }
     const settings = saveDraft();
+    const midiDraft = drafts.get(reference);
+    const data = { mode: settings.mode, reference };
+    if (midiDraft?.edited || midiDraft?.offset || midiDraft?.transpose) {
+      data.notes = serialNotes(playingNotes({ id: reference }));
+    }
     busyStatus(true, "Applying MIDI notes.");
     showTrackList();
     try {
-      project = await json(trackURL(trackId) + "/midi", post({ mode: settings.mode, reference }));
+      project = await json(trackURL(trackId) + "/midi", post(data));
       const detail = await json(trackURL(trackId));
       drafts.set(trackId, { ...settings, raw: detail.notes, edited: false, offset: 0, transpose: 0 });
       changedSession = true;
@@ -1056,7 +1061,10 @@ function textTab() {
   return lines.join("\n");
 }
 
-$("backing-controls").open = !matchMedia("(max-width: 48rem)").matches;
+const compactBacking = matchMedia("(max-width: 48rem)");
+function setBackingDefault() { $("backing-controls").open = !compactBacking.matches; }
+compactBacking.addEventListener("change", setBackingDefault);
+setBackingDefault();
 function importDialog() { $("import-dialog").showModal(); }
 $("open").onclick = $("empty-open").onclick = importDialog;
 $("cancel-import").onclick = () => $("import-dialog").close();

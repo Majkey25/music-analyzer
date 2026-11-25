@@ -209,6 +209,14 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(track["method"], "MIDI reference")
         self.assertEqual(track["notes"][0]["pitch"], 17)
         self.assertAlmostEqual(track["notes"][0]["start"], .3)
+        edited = {**track["notes"][0], "pitch": 18, "head": "ghost"}
+        response = self.client.post(dest + "/midi", json={
+            "mode": "bass", "reference": reference["id"], "notes": [edited],
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self.client.get(dest).get_json()["notes"], [edited])
+        original_reference = self.client.get(f"{base}/tracks/{reference['id']}").get_json()
+        self.assertEqual(original_reference["notes"], track["notes"])
         with self.client.get(dest + "/audio") as updated:
             self.assertEqual(original_audio, updated.data)
 

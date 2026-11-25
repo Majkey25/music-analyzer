@@ -160,6 +160,7 @@ def run() -> None:
             page.get_by_role("button", name="Drum hits").click()
             expect(page.get_by_text("Kick", exact=True)).to_be_visible()
             page.set_viewport_size({"width": 390, "height": 844})
+            expect(page.locator("#backing-controls")).to_have_js_property("open", False)
             assert page.evaluate("document.documentElement.scrollWidth === innerWidth")
             assert not errors, errors
             if not page.locator("#numerator").is_visible():
@@ -172,19 +173,28 @@ def run() -> None:
             reference = mido.MidiFile(ticks_per_beat=480)
             reference.add_track("Reference bass").extend([
                 mido.Message("program_change", program=33),
-                mido.Message("note_on", note=17, velocity=80),
-                mido.Message("note_off", note=17, time=480),
+                mido.Message("note_on", note=28, velocity=80),
+                mido.Message("note_off", note=28, time=480),
             ])
             midi = Path(root) / "reference.mid"
             reference.save(midi)
             page.locator("#add-midi-file").set_input_files(midi)
             expect(page.locator("#reference-midi")).to_contain_text("Reference bass")
+            tracks = page.locator("#tracks")
+            tracks.get_by_role("button", name="Reference bass").click()
+            expect(tracks.get_by_role("button", name="Reference bass")).to_have_attribute("aria-pressed", "true")
+            editor = page.locator("#edit")
+            if not editor.evaluate("element => element.open"):
+                editor.locator("summary").click()
+            page.get_by_role("combobox", name="Note head for note at 0:00.00").select_option("ghost")
+            expect(page.locator("#score-image #n0-0 text")).to_have_text("(0)")
+            tracks.get_by_role("button", name="Drop F bass").click()
             with page.expect_response(lambda response: response.url.endswith("/midi")
                                       and "/tracks/" in response.url) as adopted:
                 page.locator("#apply-midi").click()
             assert adopted.value.status == 200
             expect(page.locator("#tracks").get_by_role("button", name="Drop F bass")).to_contain_text("1 note")
-            expect(page.locator("#score-image g.note").first).to_be_visible()
+            expect(page.locator("#score-image #n0-0 text")).to_have_text("(4)")
             assert not errors, errors
         finally:
             browser.close()
