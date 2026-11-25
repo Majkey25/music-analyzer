@@ -19,9 +19,11 @@ export class Transport {
     this.generation = 0;
     audio.addEventListener("loadedmetadata", () => { audio.currentTime = this.position; });
     audio.addEventListener("ended", () => {
+      if (!this.playing) return;
       if (this.loop) {
+        const generation = this.generation;
         this.seek(this.loop.start);
-        audio.play().catch(error => this.reportFailure(error));
+        audio.play().catch(() => this.playbackRejected(generation));
       } else this.pause();
     });
     audio.addEventListener("error", () => {
@@ -35,6 +37,12 @@ export class Transport {
   reportFailure(error) {
     this.pause();
     this.failed(error);
+  }
+
+  playbackRejected(generation) {
+    if (this.playing && generation === this.generation) {
+      this.reportFailure(new Error("Poslech se nepodařilo spustit. Zkus přehrát znovu."));
+    }
   }
 
   setSource(url, duration, keepPosition = false) {
@@ -83,9 +91,8 @@ export class Transport {
         }
       }
       if (this.playing && generation === this.generation) this.tick();
-    } catch (error) {
-      if (generation !== this.generation || !this.playing) return;
-      this.reportFailure(new Error("Poslech se nepodařilo spustit. Zkus přehrát znovu."));
+    } catch {
+      this.playbackRejected(generation);
     }
   }
 

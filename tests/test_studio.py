@@ -11,6 +11,7 @@ from xml.etree import ElementTree as ET
 import mido
 import numpy as np
 import soundfile as sf
+from werkzeug.http import parse_options_header
 
 from studio import audio as audio_engine
 from studio.archive import write_archive
@@ -147,16 +148,38 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(state["status"], "ready", state["message"])
         return state
 
+    def test_abandoned_failed_imports_do_not_use_all_session_slots(self):
+        demo = self.wait_for(self.client.post("/api/demo"))
+        for _ in range(5):
+            response = self.client.post("/api/restore", data={"project": (BytesIO(b"broken"), "bad.zip")})
+            self.assertEqual(response.status_code, 202)
+            self.app.extensions["studio_executor"].submit(lambda: None).result(timeout=8)
+            failed = self.client.get(f"/api/projects/{response.get_json()['id']}").get_json()
+            self.assertEqual(failed["status"], "error")
+            self.assertIn("Archiv", failed["message"])
+        self.assertEqual(self.client.get(f"/api/projects/{demo['id']}").get_json()["status"], "ready")
+        self.wait_for(self.client.post("/api/demo"))
+
+    def test_upload_write_failure_returns_localized_json_and_releases_project(self):
+        with patch("werkzeug.datastructures.FileStorage.save", side_effect=OSError("private path")):
+            for route, field, filename in [("/api/projects", "files", "track.wav"),
+                                           ("/api/restore", "project", "project.zip")]:
+                with self.subTest(route=route):
+                    response = self.client.post(route, data={field: (BytesIO(b"sample"), filename)})
+                    self.assertEqual(response.status_code, 500)
+                    self.assertIn("volné místo", response.get_json()["error"])
+                    self.assertFalse(any(Path(self.directory.name).iterdir()))
+
     def test_saved_audio_project_reopens_with_note_edits_and_all_practice_sources(self):
         origin, bass, drums_id = "f" * 32, "a" * 32, "d" * 32
-        titles = {origin: "Celý mix", bass: "Basa", drums_id: "Bicí"}
+        titles = {origin: "Celý mix", bass: "Basa: Drop F", drums_id: "Bicí"}
         root = Path(self.directory.name)
         audio = {}
         for key, amplitude in zip(titles, [.3, .1, .2]):
             path = root / f"{key}.wav"
             sf.write(path, np.full((4410, 2), amplitude, dtype=np.float32), 44100, subtype="PCM_16")
             audio[key] = path
-        initial = {"version": 1, "title": "Pracovní skladba", "source": origin, "active": bass,
+        initial = {"version": 1, "title": "Pracovní skladba/02", "source": origin, "active": bass,
                    "separated": True, "phase": 0, "tempo": [{"time": 0, "bpm": 120}],
                    "meter": [{"time": 0, "numerator": 4, "denominator": 4}],
                    "tracks": [{"id": key, "title": title, "mode": "bass", "method": "Demo",
@@ -168,6 +191,9 @@ class HttpTests(unittest.TestCase):
             state = self.wait_for(self.client.post("/api/restore", data={"project": (source, "fixture.zip")}))
         base = f"/api/projects/{state['id']}"
         self.assertEqual(state["active"], bass)
+        with self.client.get(f"{base}/tracks/{bass}/audio?download=1") as stem:
+            self.assertEqual(parse_options_header(stem.headers["Content-Disposition"])[1]["filename"],
+                             "Basa_ Drop F.wav")
         playback = self.client.post(base + "/practice", json={"tracks": [drums_id]}).get_json()
         response = self.client.get(f"{base}/practice/{playback['key']}")
         signal, rate = sf.read(BytesIO(response.data))
@@ -177,16 +203,22 @@ class HttpTests(unittest.TestCase):
         altered = {"tempo": initial["tempo"], "meter": initial["meter"], "phase": 0.01,
                    "active": bass, "edits": {bass: {"notes": [note(29, .01, .1)], "mode": "bass",
                                                   "setup": {"tuning": [17, 24, 29, 34], "frets": 24,
-                                                            "preferred": [1]}}}}
+                                                            "preferred": [1]}}},
+                   "practice": {"monitor": "@custom", "mix": [drums_id], "speed": .75,
+                                "position": .05, "view": "tab", "loop": True}}
         self.wait_for(self.client.post(base + "/save", json=altered))
         download = self.client.get(base + "/download")
         self.assertEqual(download.status_code, 200)
+        self.assertEqual(parse_options_header(download.headers["Content-Disposition"])[1]["filename"],
+                         "Pracovní skladba_02.music-analyzer.zip")
         content = download.data
         download.close()
         restored = self.wait_for(self.client.post("/api/restore", data={
             "project": (BytesIO(content), "saved.music-analyzer.zip"),
         }))
         self.assertEqual(restored["phase"], .01)
+        self.assertEqual(restored["title"], initial["title"])
+        self.assertEqual(restored["practice"], altered["practice"])
         self.assertEqual(restored["source"], origin)
         self.assertEqual(len(restored["tracks"]), 3)
         reopened = self.client.get(f"/api/projects/{restored['id']}/tracks/{bass}").get_json()
@@ -237,7 +269,7 @@ class HttpTests(unittest.TestCase):
                          ["0", "5"])
 
     def test_mixing_leaves_other_routes_responsive_and_prevents_close(self):
-        project = self.client.post("/api/demo").get_json()
+        project = self.wait_for(self.client.post("/api/demo"))
         base = f"/api/projects/{project['id']}"
         stem = next(track for track in project["tracks"] if track["mode"] == "bass")
         started, release = Event(), Event()

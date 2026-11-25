@@ -136,12 +136,22 @@ function setInstrument(value, preset) {
   if (presets[preset]) $("tuning").value = presets[preset];
 }
 
+function hasUnsavedChanges() {
+  return changedSession || [...drafts.values()].some(value => value.edited);
+}
+
 function allowReplacement() {
-  return !(changedSession || [...drafts.values()].some(value => value.edited))
+  return !hasUnsavedChanges()
     || window.confirm(downloadRequested
       ? "Stáhl se soubor relace? Po zavření zůstane jen stažená kopie."
       : "Zavřít relaci s neuloženými úpravami?");
 }
+
+window.addEventListener("beforeunload", event => {
+  if (!hasUnsavedChanges()) return;
+  event.preventDefault();
+  event.returnValue = true;
+});
 
 async function closeProject(checkEdits = true) {
   if (!project) return true;
@@ -843,8 +853,11 @@ dropZone.addEventListener("drop", guarded(async event => {
   await openFiles([...event.dataTransfer.files]);
 }));
 $("demo").onclick = guarded(async () => {
-  if (!allowReplacement()) return;
-  await loadProject(await json("/api/demo", { method: "POST" }));
+  if (busy || !allowReplacement()) return;
+  busyStatus(true, "Připravuji studiovou ukázku.");
+  try {
+    await loadProject(await json("/api/demo", { method: "POST" }));
+  } finally { busyStatus(false); }
 });
 $("close").onclick = guarded(closeProject);
 $("save-project").onclick = guarded(async () => {

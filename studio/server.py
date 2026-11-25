@@ -2,6 +2,7 @@ import re
 import shutil
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field
 from importlib.resources import files as package_files
 from itertools import pairwise
@@ -85,6 +86,13 @@ class Project:
     settings: PracticeSettings | None = None
     practice: dict[str, tuple[Path, audio.Wave]] = field(default_factory=dict)
     mixing: bool = False
+
+
+def download_name(title: str, suffix: str) -> str:
+    base = re.sub(r'[\\/:*?"<>|\x00-\x1f\x7f]', "_", title).strip(" .") or "relace"
+    if re.fullmatch(r"CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³]", base.partition(".")[0].upper()):
+        base = "_" + base
+    return base + suffix
 
 
 def number(value: object, low: float, high: float, label: str) -> float:
@@ -334,6 +342,11 @@ def create_app(root: Path) -> Flask:
     def invalid(error: ValueError):
         return jsonify(error=str(error)), 400
 
+    @app.errorhandler(OSError)
+    def storage_error(error: OSError):
+        app.logger.warning("Local I/O failed (%s)", type(error).__name__)
+        return jsonify(error="Soubor se nepodařilo zpracovat. Zkontroluj volné místo a přístup k souboru."), 500
+
     @app.errorhandler(HTTPException)
     def http_error(error: HTTPException):
         message = (
@@ -406,7 +419,15 @@ def create_app(root: Path) -> Flask:
             projects.pop(project.id)
             executor.submit(shutil.rmtree, project.root, ignore_errors=True)
         if len(projects) >= MAX_PROJECTS:
-            abort(409, "Zavři jednu z ostatních relací nebo restartuj aplikaci.")
+            failed = min(
+                (p for p in projects.values() if p.status == "error" and not p.tracks),
+                key=lambda p: p.last_used,
+                default=None,
+            )
+            if failed is None:
+                abort(409, "Zavři jednu z ostatních relací nebo restartuj aplikaci.")
+            projects.pop(failed.id)
+            executor.submit(shutil.rmtree, failed.root, ignore_errors=True)
         id = uuid4().hex
         directory = root / id
         directory.mkdir()
@@ -494,10 +515,10 @@ def create_app(root: Path) -> Flask:
 
     @app.post("/api/demo")
     def demo():
-        with lock:
-            project = create_project("Studiová ukázka")
+        def prepare(progress: Callable[[str], None]) -> None:
+            progress("Připravuji studiovou ukázku.")
             bass = [17, 17, 24, 22, 25, 27, 29, 22]
-            project.tracks = [
+            tracks = [
                 Track("Drop F basa", "bass", method="Demo", notes=[
                     {"start": i * 0.25, "end": i * 0.25 + 0.2,
                      "pitch": bass[(i // 8 + i % 8) % 8], "velocity": 100}
@@ -516,19 +537,24 @@ def create_app(root: Path) -> Flask:
                 ]),
             ]
             stems = []
-            for track in project.tracks:
+            for track in tracks:
                 assert track.notes is not None
                 track.path = project.root / f"{track.mode}.wav"
                 track.wave = audio.demo_audio(track.path, track.notes, track.mode)
                 stems.append(track.path)
-            project.active_track = project.tracks[0].id
             mix = project.root / "source.wav"
             mix_track = Track("Celá skladba", "melody", path=mix,
                               wave=audio.mix_tracks(stems, mix), method="Demo")
-            project.tracks.insert(0, mix_track)
-            project.source, project.separated = mix_track.id, True
-            project.status, project.message, project.timing = "ready", "Hotovo.", "Demo"
-            return snapshot(project)
+            with lock:
+                project.tracks = [mix_track, *tracks]
+                project.active_track = tracks[0].id
+                project.source, project.separated = mix_track.id, True
+                project.timing = "Demo"
+
+        with lock:
+            project = create_project("Studiová ukázka")
+            run(project, prepare)
+            return snapshot(project), 202
 
     @app.get("/api/projects/<id>")
     def project_status(id: str):
@@ -598,7 +624,7 @@ def create_app(root: Path) -> Flask:
             if project.archive is None:
                 abort(404, "Relace zatím nemá připravený soubor.")
             return send_file(project.archive, as_attachment=True,
-                             download_name=f"{project.title}.music-analyzer.zip")
+                             download_name=download_name(project.title, ".music-analyzer.zip"))
 
     @app.delete("/api/projects/<id>")
     def close_project(id: str):
@@ -627,7 +653,7 @@ def create_app(root: Path) -> Flask:
             if track.path is None:
                 abort(404, "Tato stopa nemá audio.")
             return send_file(track.path, conditional=True, mimetype="audio/wav",
-                             download_name=f"{track.title}.wav",
+                             download_name=download_name(track.title, ".wav"),
                              as_attachment=request.args.get("download") == "1")
 
     @app.post("/api/projects/<id>/separate")
@@ -674,6 +700,7 @@ def create_app(root: Path) -> Flask:
             project.mixing = True
         try:
             wave = audio.mix_tracks(media, destination)
+            response = jsonify(key=key, wave=wave)
             with lock:
                 project.practice[key] = (destination, wave)
                 if len(project.practice) > 2:
@@ -683,7 +710,11 @@ def create_app(root: Path) -> Flask:
                         path.unlink(missing_ok=True)
                     except OSError:
                         app.logger.info("Previous practice audio is still streaming.")
-            return jsonify(key=key, wave=wave)
+            return response
+        except Exception:
+            with suppress(OSError):
+                destination.unlink(missing_ok=True)
+            raise
         finally:
             with lock:
                 project.mixing = False
