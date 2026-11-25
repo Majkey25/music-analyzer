@@ -117,11 +117,11 @@ def tab_techniques(svg: str, marks: Mapping[str, set[Mark]]) -> str:
                     # A short stroke rising or falling into the fret, like "/3" or "\3".
                     rise = size * .25 * slide
                     ET.SubElement(note, _SVG + "path", {
-                        "d": f"M{left - size * .6:.0f} {y + rise:.0f} L{left:.0f} {y - rise:.0f}",
+                        "d": f"M{left - size * .5:.0f} {y + rise:.0f} L{left:.0f} {y - rise:.0f}",
                         "stroke": "currentColor", "fill": "none",
                         "stroke-width": f"{size * .08:.0f}", "stroke-linecap": "round",
                     })
-                    left -= size * .7
+                    left -= size * .6
                 # Widen the gap Verovio cut into the string line around the fret.
                 row = [line for line in lines if line.y == y]
                 before = max((line for line in row if line.end <= x), key=lambda line: line.end, default=None)
