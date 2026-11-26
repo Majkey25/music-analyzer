@@ -288,7 +288,7 @@ button.note { background: light-dark(#dce8f9, #344a68); border-color: light-dark
 button.note.playing { border-color: var(--accent); background: var(--accent); color: var(--base); }
 #playhead { position: absolute; z-index: 2; inline-size: 2px; background: var(--accent); inset-block: 0; pointer-events: none; }
 #score-image {
-  display: block; width: 100%; min-height: 5rem; background: var(--paper);
+  display: flow-root; width: 100%; min-height: 5rem; background: var(--paper);
   color: var(--score-color);
 }
 #score-stage { position: relative; border: 1px solid var(--border); border-radius: var(--radius); overflow: clip; }
@@ -300,6 +300,7 @@ button.note.playing { border-color: var(--accent); background: var(--accent); co
 #score-image .placeholder, #score-image g.tempo, #score-image g.label { visibility: hidden; }
 #score-image g.note[id], #score-image g.measure[role="button"] { cursor: pointer; }
 #score-image g.note.playing { fill: var(--score-active); color: var(--score-active); }
+#score-image g.tabGrp g.note > text { paint-order: stroke; stroke: var(--paper); stroke-width: 48px; }
 #score-image g.measure.is-current > g.staff > path { stroke: var(--score-active); }
 #score-image g.measure:focus-visible { outline: 2px solid var(--score-active); outline-offset: -2px; }
 #score-image .measure-hit { fill: transparent; stroke: none; pointer-events: all; }

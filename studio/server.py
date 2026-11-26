@@ -883,7 +883,7 @@ def create_app(root: Path) -> Flask:
             tuning = parse_tuning(data.get("tuning"))
             positions = tab_positions(data.get("positions"), notes, tuning)
             xml = musicxml(title, notes, tempo, meter, False, tuning=tuning,
-                           tab_positions=positions)
+                           tab_positions=positions, compact_tab=kind != "musicxml")
         else:
             xml = score_file(title, notes, tempo, meter, mode)
         if kind == "musicxml":
@@ -897,7 +897,7 @@ def create_app(root: Path) -> Flask:
             toolkit.setResourcePath(str(package_files("verovio").joinpath("data")))
             engraving.toolkit = toolkit
         printing = kind == "print"
-        width = 2150 if printing else integer(data.get("width", 1600), 900, 2700, "Score width")
+        width = 2150 if printing else integer(data.get("width", 1600), 720 if tablature else 900, 2700, "Score width")
         toolkit.setOptions({"pageWidth": width, "pageHeight": 1300 if printing else 1050, "scale": 46,
                             "header": "none", "footer": "none", "adjustPageHeight": not printing,
                             "breaks": "auto", "breaksNoWidow": True, "mnumInterval": 1, "minLastJustification": .35,

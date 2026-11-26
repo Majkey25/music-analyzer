@@ -13,13 +13,13 @@ export function makeScoreCursor(namespace) {
     if (!measure?.group.isConnected) { line.remove(); return; }
     let layout = geometry.get(measure.group);
     if (!layout) {
-      const staffs = [...measure.group.querySelectorAll("g.staff")];
+      const staffs = [...measure.group.querySelectorAll(":scope > g.staff")];
       if (!staffs.length) return;
       const boxes = staffs.flatMap(staff => {
         const paths = [...staff.querySelectorAll(":scope > path")];
         return (paths.length ? paths : [staff]).map(path => path.getBBox());
       });
-      const rhythm = [...measure.group.querySelectorAll("g.tabGrp, g.beam:has(g.tabDurSym)")].map(glyph => glyph.getBBox());
+      const rhythm = staffs.filter(staff => staff.querySelector("g.tabDurSym")).map(staff => staff.getBBox());
       const left = Math.min(...boxes.map(box => box.x));
       const right = Math.max(...boxes.map(box => box.x + box.width));
       const duration = measure.end - measure.start;
@@ -32,7 +32,7 @@ export function makeScoreCursor(namespace) {
       }
       const points = [...anchors].sort((a, b) => a[0] - b[0]);
       for (let i = 1; i < points.length; i++) points[i][1] = Math.max(points[i - 1][1], points[i][1]);
-      layout = { points,
+      layout = { points, staff: staffs[0],
         top: Math.min(...boxes.map(box => box.y)) - 90,
         bottom: Math.max(...[...boxes, ...rhythm].map(box => box.y + box.height)) + 90 };
       geometry.set(measure.group, layout);
@@ -45,7 +45,7 @@ export function makeScoreCursor(namespace) {
     if (line.parentNode !== measure.group) {
       line.setAttribute("y1", layout.top);
       line.setAttribute("y2", layout.bottom);
-      measure.group.append(line);
+      measure.group.insertBefore(line, layout.staff);
     }
     line.setAttribute("x1", x);
     line.setAttribute("x2", x);
@@ -75,6 +75,15 @@ export function mountScore(host, score, notes, phase, seek) {
   svg.removeAttribute("width");
   svg.removeAttribute("height");
   host.replaceChildren(svg);
+  const firstSystem = svg.querySelector("g.system");
+  if (firstSystem && svg.querySelector("g.tabGrp")) {
+    // The tempo heading already appears in the player, so trim its empty band in TAB.
+    const frame = svg.getBoundingClientRect();
+    const top = Math.min(...[...firstSystem.querySelectorAll("g.staff, g.mNum, g.tabPalmMute")]
+      .map(mark => mark.getBoundingClientRect().top));
+    const inset = top - frame.top - 16;
+    if (inset > 0 && inset < frame.height) svg.style.marginBlockStart = `${-inset}px`;
+  }
   const markers = [], byID = new Map();
   for (const glyph of svg.querySelectorAll("g.note[id]")) {
     const match = /^n(\d+)-\d+$/u.exec(glyph.id);

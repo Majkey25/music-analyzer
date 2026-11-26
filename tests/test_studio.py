@@ -326,6 +326,7 @@ class HttpTests(unittest.TestCase):
         self.assertIn(0, score["measures"].values())
         self.assertEqual(score["onsets"]["n0-0"], 0)
         svg = {"s": "http://www.w3.org/2000/svg"}
+        self.assertIsNotNone(graph.find(".//s:g[@class='rest'][@transform]", svg))
         matched = []
         for group in graph.findall(".//s:g[@class='tabGrp']", svg):
             digit = group.find("s:g[@class='note']/s:text", svg)
@@ -365,9 +366,10 @@ class HttpTests(unittest.TestCase):
                    for stem in glyph.findall(".//s:g[@class='stem']/s:path", ns)]
         self.assertTrue(rhythms)
         for rhythm, stem in rhythms:
-            offset = float(rhythm.attrib["transform"].split()[1].rstrip(")"))
+            transform = rhythm.attrib["transform"].split()
+            offset, scale = (float(transform[index].rstrip(")")) for index in (1, 3))
             coordinates = stem.attrib["d"].split()
-            self.assertGreater(offset - max(float(coordinates[1]), float(coordinates[-1])), bottom)
+            self.assertGreater(offset + scale * max(float(coordinates[1]), float(coordinates[-1])), bottom)
         display = self.client.post("/api/export/score", json=request).get_json()
         self.assertGreater(display["end"], notes[-1]["end"] * 1000)
 
