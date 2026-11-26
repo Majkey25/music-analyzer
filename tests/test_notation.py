@@ -104,6 +104,28 @@ class NotationTests(unittest.TestCase):
         self.assertTrue({"note", "tie", "clef"}.issubset(classes))
         self.assertEqual(ET.fromstring(xml).findtext(".//clef/sign"), "F")
 
+    def test_tab_groups_straight_eighths_without_rewriting_the_score(self) -> None:
+        eighths = [note(i / 4, (i + 1) / 4, 31) for i in range(8)]
+        mixed = [note(4, 4.125, 31), note(4.125, 4.375, 31), note(4.375, 4.5, 31),
+                 note(4.5, 4.75, 31), note(4.875, 5, 31)]
+        notes = eighths + mixed
+        setup = {"tuning": TUNING, "tab_positions": [{"string": 0, "fret": 3}] * len(notes)}
+        standard = ET.fromstring(musicxml("Bass", notes, [], [], False, **setup))
+        compact = ET.fromstring(musicxml("Bass", notes, [], [], False, **setup, compact_tab=True))
+        self.assertEqual([(n.get("id"), n.findtext("duration")) for n in standard.iter("note") if n.get("id")],
+                         [(n.get("id"), n.findtext("duration")) for n in compact.iter("note") if n.get("id")])
+        pair = ["begin", "end"]
+        first, silent, third = list(compact.iter("measure"))
+        self.assertEqual([beam.text for beam in next(standard.iter("measure")).iter("beam")], pair * 4)
+        self.assertEqual([beam.text for beam in first.iter("beam")], ["begin", "continue", "continue", "end"] * 2)
+        self.assertIsNotNone(silent.find("note/rest[@measure='yes']"))
+        self.assertEqual([beam.text for beam in third.iter("beam")], ["begin", "continue", "end"])
+
+        compound: list[Meter] = [{"time": 0.0, "numerator": 6, "denominator": 8}]
+        six = ET.fromstring(musicxml("Bass", eighths[:6], [], compound, False, tuning=TUNING,
+                                    tab_positions=setup["tab_positions"][:6], compact_tab=True))
+        self.assertEqual([beam.text for beam in six.iter("beam")], ["begin", "continue", "end"] * 2)
+
     def test_empty_and_invalid_events(self) -> None:
         score = ET.fromstring(musicxml("Silence", [], [], [], False))
         self.assertEqual(len(score.findall("part/measure")), 1)

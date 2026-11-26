@@ -47,6 +47,7 @@ def run() -> None:
             page.locator("#studio").wait_for(state="visible")
             expect(page.locator("#score-image g.note").first).to_be_visible()
             expect(page.locator("#score-image g.is-current .score-playhead")).to_have_count(1)
+            expect(page.locator("#score-image g.beam polygon")).to_have_count(12)
             theme = page.get_by_role("combobox", name="Theme")
             theme.select_option("dark")
             expect(page.locator("#score-image")).to_have_css("background-color", "rgb(25, 30, 38)")

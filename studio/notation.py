@@ -3,6 +3,7 @@
 from bisect import bisect_right
 from collections import defaultdict
 from io import BytesIO
+from itertools import groupby
 from math import isfinite
 from statistics import median
 from typing import Literal, NotRequired, TypedDict
@@ -165,18 +166,18 @@ def _tag(parent: ET.Element, name: str, value: str | int) -> None:
     ET.SubElement(parent, name).text = str(value)
 
 
-def _beam(measure: ET.Element, numerator: int, denominator: int) -> None:
-    """Group short notes within a beat without joining across rests."""
+def _beam(measure: ET.Element, numerator: int, denominator: int, *, compact_tab: bool) -> None:
+    """Beam straight eighths in fours on 4/4 TAB. Group other runs by beat."""
     beat_size = 4 * _DIVISIONS // denominator
     if denominator == 8 and numerator > 3 and numerator % 3 == 0:
         beat_size *= 3
     cursor = 0
     run: list[tuple[ET.Element, int, int]] = []
 
-    def flush() -> None:
+    def flush_beat(events: list[tuple[ET.Element, int, int]]) -> None:
         for level in range(1, 5):
             groups: list[list[ET.Element]] = [[]]
-            for row, _, count in run:
+            for row, _, count in events:
                 if count >= level:
                     groups[-1].append(row)
                 elif groups[-1]:
@@ -189,6 +190,25 @@ def _beam(measure: ET.Element, numerator: int, denominator: int) -> None:
                     beam.text = "begin" if not i else "end" if i == len(group) - 1 else "continue"
                     index = next((j for j, node in enumerate(note) if node.tag == "notations"), len(note))
                     note.insert(index, beam)
+
+    def flush() -> None:
+        half_bar = 2 * beat_size
+        extended = set()
+        if compact_tab and (numerator, denominator) == (4, 4):
+            for i, (_, onset, _) in enumerate(run):
+                if onset % half_bar == 0 and i + 4 <= len(run) and all(
+                    count == 1 and duration.find("dot") is None
+                    for duration, _, count in run[i:i + 4]
+                ):
+                    extended.add(onset)
+
+        def group_start(event: tuple[ET.Element, int, int]) -> int:
+            onset = event[1]
+            half = onset - onset % half_bar
+            return half if half in extended else onset - onset % beat_size
+
+        for _, events in groupby(run, key=group_start):
+            flush_beat(list(events))
         run.clear()
 
     flags = {"eighth": 1, "16th": 2, "32nd": 3, "64th": 4}
@@ -197,12 +217,11 @@ def _beam(measure: ET.Element, numerator: int, denominator: int) -> None:
             flush()
             cursor -= int(event.findtext("duration", "0"))
         elif event.tag == "note" and event.find("chord") is None:
-            division = cursor // beat_size
             count = flags.get(event.findtext("type", ""), 0)
-            if run and (run[-1][1] != division or event.find("rest") is not None or not count):
-                flush()
             if count and event.find("rest") is None:
-                run.append((event, division, count))
+                run.append((event, cursor, count))
+            else:
+                flush()
             cursor += int(event.findtext("duration", "0"))
     flush()
 
@@ -282,6 +301,7 @@ def _span(
 def musicxml(
     title: str, notes: list[Note], tempo: list[Tempo], meter: list[Meter], piano: bool,
     *, tuning: list[int] | None = None, tab_positions: list[Position | None] | None = None,
+    compact_tab: bool = False,
 ) -> bytes:
     """Quantize to sixteenths, assigning overlapping durations to independent voices."""
     _validate(notes)
@@ -409,8 +429,15 @@ def musicxml(
                         break
                     index += 1
                 positions[voice] = index
-                _span(measure, cursor, end, 0, 0, [], voice, staff, tab_positions, tuning, notes)
-        _beam(measure, n, d)
+                if compact_tab and cursor == start and end - start == bar:
+                    rest = ET.SubElement(measure, "note")
+                    ET.SubElement(rest, "rest", measure="yes")
+                    _tag(rest, "duration", end - start)
+                    _tag(rest, "voice", voice)
+                    _tag(rest, "staff", staff)
+                else:
+                    _span(measure, cursor, end, 0, 0, [], voice, staff, tab_positions, tuning, notes)
+        _beam(measure, n, d, compact_tab=compact_tab)
         start = end
         number += 1
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)

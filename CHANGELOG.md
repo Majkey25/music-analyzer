@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* Simpler bass and guitar tablature on screen and in PDF. Straight eighths in 4/4 are grouped in fours, and the shorter rhythm row keeps rests and beams away from the fret numbers.
+
 ## 0.2.0 | 2026-11-25
 
 * A guided dashboard for importing a song, separating stems, and transcribing a selected track.

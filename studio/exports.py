@@ -24,7 +24,7 @@ PART_NAMES = {"bass": "Bass", "guitar": "Guitar", "violin": "Violin", "drums": "
 
 _SVG = "{http://www.w3.org/2000/svg}"
 _STAFF_LINE = re.compile(r"M(-?\d+) (-?\d+) L(-?\d+) \2")
-_TRANSLATE = re.compile(r"translate\((-?[\d.]+)[ ,]")
+_TRANSLATE = re.compile(r"translate\((-?[\d.]+)[ ,]+(-?[\d.]+)\)")
 ET.register_namespace("", "http://www.w3.org/2000/svg")
 ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
 
@@ -164,7 +164,7 @@ def _palm_mute(system: ET.Element, columns: dict[float, bool], top: float, size:
 
 
 def rhythm_below_tab(svg: str) -> str:
-    """Move Verovio's TAB rhythm glyphs below the fret numbers."""
+    """Collect TAB durations below the strings in a compact rhythm lane."""
     root = ET.fromstring(svg)
     for staff in root.iter(_SVG + "g"):
         if staff.get("class") != "staff":
@@ -176,12 +176,22 @@ def rhythm_below_tab(svg: str) -> str:
                  if (match := _STAFF_LINE.fullmatch(path.get("d", "")))]
         if not lines:
             continue
-        # Reflect the stems, flags and the engraver's beam segments around the
-        # middle of the staff. Fret positions and rests keep their original layout.
-        reflection = f"translate(0 {min(lines) + max(lines)}) scale(1 -1)"
+        # Shorten the empty stem space while keeping the flag and beam alignment.
+        top, bottom = min(lines), max(lines)
+        scale = .7
+        reflection = f"translate(0 {bottom + top * scale:g}) scale(1 {-scale:g})"
         beams = staff.findall(f".//{_SVG}g[@class='beam']/{_SVG}polygon")
         for glyph in [*(duration for duration in durations if len(duration)), *beams]:
             glyph.set("transform", f"{reflection} {glyph.get('transform', '')}".rstrip())
+        # A full-bar rest stays centered. Leave distinct rest heights on multiple voices.
+        if len(staff.findall(f"{_SVG}g[@class='layer']")) == 1:
+            for rest in staff.findall(f".//{_SVG}g[@class='rest']"):
+                glyph = rest.find(_SVG + "use")
+                if glyph is None:
+                    continue
+                anchor = _TRANSLATE.match(glyph.get("transform", ""))
+                if anchor:
+                    rest.set("transform", f"translate(0 {bottom + 330 - float(anchor[2]):g})")
     return ET.tostring(root, encoding="unicode")
 
 

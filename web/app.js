@@ -789,8 +789,9 @@ async function drawScore(atCursor) {
   $("score-loading").hidden = false;
   try {
     const activeView = view;
-    const { body, original } = scoreData(view === "tab");
-    body.width = Math.min(2700, Math.max(900, Math.round($("results").clientWidth / .46)));
+    const tablature = view === "tab";
+    const { body, original } = scoreData(tablature);
+    body.width = Math.min(2700, Math.max(tablature ? 720 : 900, Math.round($("results").clientWidth / .46)));
     if (atCursor) body.at = Math.max(0, transport.position - rhythm.phase);
     const score = await json("/api/export/score", { ...post(body), signal: controller.signal });
     if (controller.signal.aborted || view !== activeView) return;
